@@ -1,0 +1,91 @@
+import type { ProjectState } from "../types";
+import { initialAssignments, students } from "./mockData";
+
+export const PROJECT_STORAGE_KEY = "banzhen-project-v2";
+export const PREFERENCES_STORAGE_KEY = "banzhen-preferences-v1";
+export const LEGAL_STORAGE_KEY = "banzhen-legal-notice-v1";
+export const SAVED_AT_STORAGE_KEY = "banzhen-project-saved-at-v1";
+
+export const defaultProjectState: ProjectState = {
+  students,
+  solutionConfirmed: false,
+  assignments: initialAssignments,
+  constraints: [],
+  disabledSeatIds: ["seat-1-4-0", "seat-3-3-1"],
+  customSeats: [],
+  seatPositions: {},
+  aisleWidth: 54,
+  podiumPosition: { x: 487, y: 42 },
+  layoutPreset: "48-seat",
+  layoutConfig: { groups: 4, rows: 6, columns: 2 },
+  doorPlacement: "front-right",
+};
+
+function scopedKey(prefix: string, className: string, versionName: string) {
+  return `${prefix}:${encodeURIComponent(className)}:${encodeURIComponent(versionName)}`;
+}
+
+function freshProject(className: string): ProjectState {
+  return {
+    ...defaultProjectState,
+    students: defaultProjectState.students.map((student) => ({ ...student, className })),
+    assignments: { ...defaultProjectState.assignments },
+    constraints: [],
+    disabledSeatIds: [...defaultProjectState.disabledSeatIds],
+    customSeats: [],
+    seatPositions: {},
+    layoutConfig: { ...defaultProjectState.layoutConfig },
+    podiumPosition: { ...defaultProjectState.podiumPosition },
+  };
+}
+
+export function saveProjectState(className: string, versionName: string, project: ProjectState) {
+  const savedAt = new Date().toISOString();
+  window.localStorage.setItem(scopedKey(PROJECT_STORAGE_KEY, className, versionName), JSON.stringify(project));
+  window.localStorage.setItem(scopedKey(SAVED_AT_STORAGE_KEY, className, versionName), savedAt);
+  return savedAt;
+}
+
+export function loadSavedAt(className: string, versionName: string) {
+  const value = window.localStorage.getItem(scopedKey(SAVED_AT_STORAGE_KEY, className, versionName));
+  return value ? new Date(value) : undefined;
+}
+
+export function loadProjectState(className = "高二（3）班", versionName = "日常换位 · 第4期"): ProjectState {
+  try {
+    const scoped = window.localStorage.getItem(scopedKey(PROJECT_STORAGE_KEY, className, versionName));
+    const legacy = className === "高二（3）班" && versionName === "日常换位 · 第4期"
+      ? window.localStorage.getItem(PROJECT_STORAGE_KEY)
+      : null;
+    const raw = scoped ?? legacy;
+    if (!raw) return freshProject(className);
+    const stored = JSON.parse(raw) as Partial<ProjectState>;
+    return {
+      ...freshProject(className),
+      ...stored,
+      students: Array.isArray(stored.students) ? stored.students : freshProject(className).students,
+      layoutConfig: { ...defaultProjectState.layoutConfig, ...stored.layoutConfig },
+    };
+  } catch {
+    return freshProject(className);
+  }
+}
+
+export interface Preferences {
+  reducedMotion: boolean;
+  showShortcutHints: boolean;
+  autoLock: boolean;
+}
+
+export function loadPreferences(): Preferences {
+  try {
+    return {
+      reducedMotion: false,
+      showShortcutHints: true,
+      autoLock: false,
+      ...JSON.parse(window.localStorage.getItem(PREFERENCES_STORAGE_KEY) ?? "{}"),
+    };
+  } catch {
+    return { reducedMotion: false, showShortcutHints: true, autoLock: false };
+  }
+}
