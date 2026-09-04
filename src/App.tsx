@@ -13,23 +13,29 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AdvancedLayoutDialog,
+  ApplyCandidateDialog,
   CandidateInfoDialog,
+  ClearClassDialog,
+  CreateClassDialog,
+  CreateVersionDialog,
+  DeleteWorkspaceDialog,
   LockScreen,
   StudentBatchDialog,
   StudentEditorDialog,
   type StudentBulkPatch,
+  type VersionCopyMode,
 } from "./components/AppDialogs";
 import { CanvasRuleSummary } from "./components/CanvasRuleSummary";
 import { ClassroomCanvas } from "./components/ClassroomCanvas";
 import { ExportPreview } from "./components/ExportPreview";
 import { LegalNoticeDialog } from "./components/LegalNoticeDialog";
+import { OnboardingTour } from "./components/OnboardingTour";
 import { RosterSidebar } from "./components/RosterSidebar";
 import {
   ExportPanel,
-  GeneratePanel,
   LayoutPanel,
   RosterPanel,
-  RulePanel,
+  SeatingPanel,
   type ExportFormat,
 } from "./components/SidePanels";
 import { Stepper, steps } from "./components/Stepper";
@@ -41,6 +47,8 @@ import {
   students as initialStudents,
 } from "./data/mockData";
 import {
+  createEmptyProjectState,
+  deleteProjectState,
   LEGAL_STORAGE_KEY,
   PREFERENCES_STORAGE_KEY,
   loadSavedAt,
@@ -51,14 +59,17 @@ import {
 } from "./data/projectState";
 import { createCandidates } from "./domain/candidates";
 import { exportSeatingPlan } from "./domain/export";
-import { createGridSeats, createPresetSeats, getLayoutPreset } from "./domain/layoutPresets";
-import { buildConstraints, countRuleViolations, findRuleConflicts, rearrangeAssignments } from "./domain/rules";
+import { createGridSeats, createGuardianSeats, createPresetSeats, getLayoutPreset } from "./domain/layoutPresets";
+import { buildConstraints, findRuleConflicts } from "./domain/rules";
 import { useHistory } from "./hooks/useHistory";
 import type {
   AssignmentMap,
   AppTheme,
   ConstraintType,
+  DoorPlacement,
+  GenerationStrategy,
   GenerationWeights,
+  GuardianSide,
   LayoutConfig,
   LayoutPresetId,
   ProjectState,
@@ -69,6 +80,48 @@ import type {
 } from "./types";
 
 const EMPTY_LAYOUT_ASSIGNMENTS: AssignmentMap = {};
+const DOOR_PLACEMENT_ORDER: DoorPlacement[] = ["front-left", "front-right", "back-left", "back-right"];
+const DEFAULT_CLASSES = ["高二（3）班"];
+const DEFAULT_VERSIONS = ["日常换位 · 第4期"];
+const WORKSPACE_CATALOG_STORAGE_KEY = "banzhen-workspace-catalog-v1";
+const ONBOARDING_STORAGE_KEY = "banzhen-onboarding-v1";
+
+interface WorkspaceCatalog {
+  classes: string[];
+  versionsByClass: Record<string, string[]>;
+}
+
+function loadWorkspaceCatalog(): WorkspaceCatalog {
+  const fallback = {
+    classes: [...DEFAULT_CLASSES],
+    versionsByClass: Object.fromEntries(DEFAULT_CLASSES.map((className) => [className, [...DEFAULT_VERSIONS]])),
+  };
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(WORKSPACE_CATALOG_STORAGE_KEY) ?? "{}") as Partial<WorkspaceCatalog>;
+    const classes = Array.isArray(stored.classes) && stored.classes.length
+      ? stored.classes.filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+      : fallback.classes;
+    return {
+      classes,
+      versionsByClass: Object.fromEntries(classes.map((className) => {
+        const versions = stored.versionsByClass?.[className];
+        return [className, Array.isArray(versions) && versions.length ? versions : [...DEFAULT_VERSIONS]];
+      })),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function loadInitialWorkspace() {
+  const catalog = loadWorkspaceCatalog();
+  const savedClass = window.localStorage.getItem("banzhen-current-class");
+  const currentClass = savedClass && catalog.classes.includes(savedClass) ? savedClass : catalog.classes[0];
+  const versions = catalog.versionsByClass[currentClass] ?? DEFAULT_VERSIONS;
+  const savedVersion = window.localStorage.getItem("banzhen-current-version");
+  const currentVersion = savedVersion && versions.includes(savedVersion) ? savedVersion : versions[0];
+  return { catalog, currentClass, currentVersion };
+}
 
 function remapAssignments(
   current: AssignmentMap,
@@ -89,21 +142,24 @@ function remapAssignments(
 }
 
 function App() {
-  const classOptions = ["高二（3）班", "高二（4）班", "高一（1）班"];
-  const versionOptions = ["日常换位 · 第4期", "日常换位 · 第3期", "期中考试座位"];
-  const [currentClass, setCurrentClass] = useState(() => window.localStorage.getItem("banzhen-current-class") ?? classOptions[0]);
-  const [currentVersion, setCurrentVersion] = useState(() => window.localStorage.getItem("banzhen-current-version") ?? versionOptions[0]);
+  const initialWorkspace = useMemo(loadInitialWorkspace, []);
+  const [workspaceCatalog, setWorkspaceCatalog] = useState(initialWorkspace.catalog);
+  const [currentClass, setCurrentClass] = useState(initialWorkspace.currentClass);
+  const [currentVersion, setCurrentVersion] = useState(initialWorkspace.currentVersion);
+  const classOptions = workspaceCatalog.classes;
+  const versionOptions = workspaceCatalog.versionsByClass[currentClass] ?? [];
   const initialProject = useMemo(() => loadProjectState(currentClass, currentVersion), []);
   const history = useHistory<ProjectState>(initialProject);
   const students = history.value.students;
-  const [currentStep, setCurrentStep] = useState<WizardStep>("rules");
-  const [theme, setTheme] = useState<AppTheme>(() => window.localStorage.getItem("banzhen-theme") === "cute" ? "cute" : "minimal");
+  const [currentStep, setCurrentStep] = useState<WizardStep>("roster");
+  const [theme, setTheme] = useState<AppTheme>(() => window.localStorage.getItem("banzhen-theme") === "minimal" ? "minimal" : "cute");
   const [preferences, setPreferences] = useState<Preferences>(loadPreferences);
   const [tool, setTool] = useState<ToolMode>("select");
   const [selectedIds, setSelectedIds] = useState(initiallySelectedStudentIds);
   const [selectedRule, setSelectedRule] = useState<ConstraintType>("not_adjacent");
   const [ruleConflicts, setRuleConflicts] = useState<ReturnType<typeof findRuleConflicts>>([]);
-  const [algorithm, setAlgorithm] = useState("group_balanced");
+  const [algorithms, setAlgorithms] = useState<GenerationStrategy[]>(["group_balanced"]);
+  const [separateGenders, setSeparateGenders] = useState(false);
   const [generationWeights, setGenerationWeights] = useState<GenerationWeights>({ score: 72, height: 58, appearance: 25 });
   const [candidates, setCandidates] = useState<SeatingCandidate[]>([]);
   const [activeCandidateId, setActiveCandidateId] = useState<string>();
@@ -119,7 +175,13 @@ function App() {
   const [bulkEditIds, setBulkEditIds] = useState<string[]>();
   const [advancedLayoutOpen, setAdvancedLayoutOpen] = useState(false);
   const [candidateInfoOpen, setCandidateInfoOpen] = useState(false);
+  const [applyCandidateConfirmOpen, setApplyCandidateConfirmOpen] = useState(false);
+  const [createClassOpen, setCreateClassOpen] = useState(false);
+  const [createVersionOpen, setCreateVersionOpen] = useState(false);
+  const [clearClassOpen, setClearClassOpen] = useState(false);
+  const [deleteWorkspaceTarget, setDeleteWorkspaceTarget] = useState<"class" | "version">();
   const [locked, setLocked] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(() => Boolean(window.localStorage.getItem(LEGAL_STORAGE_KEY)) && !window.localStorage.getItem(ONBOARDING_STORAGE_KEY));
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "error">("saved");
   const [savedAt, setSavedAt] = useState(() => (loadSavedAt(currentClass, currentVersion) ?? new Date()).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
   const [exportFormat, setExportFormat] = useState<ExportFormat>("pdf");
@@ -129,17 +191,20 @@ function App() {
   const [exportFileName, setExportFileName] = useState("高二3班_座次表_第4期");
   const [exportTheme, setExportTheme] = useState<"paper" | "ink">("paper");
   const toastTimer = useRef<number | undefined>(undefined);
-  const rearrangeSeed = useRef(20260904);
   const generationSequence = useRef(0);
   const customSeatSequence = useRef(0);
-  const printReturnStep = useRef<WizardStep>("rules");
+  const printReturnStep = useRef<WizardStep>("seating");
   const layoutPreset = history.value.layoutPreset;
-  const doorPlacement = history.value.doorPlacement;
+  const doorPlacements = DOOR_PLACEMENT_ORDER.filter((placement) => history.value.doorPlacements.includes(placement));
   const reducedMotion = preferences.reducedMotion;
 
   const layoutSeats = useMemo(() => {
     const disabledIds = new Set(history.value.disabledSeatIds);
-    return [...createGridSeats(history.value.layoutConfig), ...history.value.customSeats].map((seat) => {
+    return [
+      ...createGridSeats(history.value.layoutConfig),
+      ...history.value.customSeats,
+      ...createGuardianSeats(history.value.guardianSides),
+    ].map((seat) => {
       const position = history.value.seatPositions[seat.id];
       return {
         ...seat,
@@ -148,9 +213,14 @@ function App() {
         canvasY: position?.y,
       };
     });
-  }, [history.value.customSeats, history.value.disabledSeatIds, history.value.layoutConfig, history.value.seatPositions]);
+  }, [history.value.customSeats, history.value.disabledSeatIds, history.value.guardianSides, history.value.layoutConfig, history.value.seatPositions]);
   const activeCandidate = candidates.find((candidate) => candidate.id === activeCandidateId);
   const displayAssignments = activeCandidate?.assignments ?? history.value.assignments;
+
+  useEffect(() => {
+    if (!activeCandidate) setApplyCandidateConfirmOpen(false);
+  }, [activeCandidate]);
+
   const seatedIds = useMemo(() => {
     const visibleSeatIds = new Set(layoutSeats.map((seat) => seat.id));
     return new Set(
@@ -161,14 +231,9 @@ function App() {
     );
   }, [displayAssignments, layoutSeats]);
   const unseatedStudents = students.filter((student) => !seatedIds.has(student.id));
-  const rulesNeedRearrange = useMemo(
-    () => countRuleViolations(history.value.assignments, layoutSeats, history.value.constraints) > 0,
-    [history.value.assignments, history.value.constraints, layoutSeats],
-  );
   const selectedStudents = selectedIds
     .map((id) => students.find((student) => student.id === id))
     .filter((student): student is Student => Boolean(student));
-
   const showToast = (message: string) => {
     setToast(message);
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
@@ -191,6 +256,17 @@ function App() {
     }, 260);
     return () => window.clearTimeout(timer);
   }, [currentClass, currentVersion, history.value, preferences]);
+
+  useEffect(() => {
+    window.localStorage.setItem(WORKSPACE_CATALOG_STORAGE_KEY, JSON.stringify(workspaceCatalog));
+  }, [workspaceCatalog]);
+
+  useEffect(() => {
+    const favicon = document.querySelector<HTMLLinkElement>("link[data-banzhen-favicon]");
+    const themeColor = document.querySelector<HTMLMetaElement>("meta[name='theme-color']");
+    if (favicon) favicon.href = theme === "cute" ? "/favicon-cute.svg" : "/favicon-minimal.svg";
+    if (themeColor) themeColor.content = theme === "cute" ? "#fff8fa" : "#f8f5ed";
+  }, [theme]);
 
   useEffect(() => {
     const handleVisibility = () => {
@@ -262,6 +338,163 @@ function App() {
     }
   };
 
+  const createClass = (name: string) => {
+    const initialVersion = "初始座位 · 第1版";
+    const nextProject = createEmptyProjectState(name);
+    try {
+      saveProjectState(currentClass, currentVersion, history.value);
+      saveProjectState(name, initialVersion, nextProject);
+      setWorkspaceCatalog((current) => ({
+        classes: [...current.classes, name],
+        versionsByClass: { ...current.versionsByClass, [name]: [initialVersion] },
+      }));
+      history.reset(nextProject);
+      setCurrentClass(name);
+      setCurrentVersion(initialVersion);
+      setCurrentStep("roster");
+      setSelectedIds([]);
+      setCandidates([]);
+      setActiveCandidateId(undefined);
+      setCreateClassOpen(false);
+      setSavedAt(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
+      showToast(`已创建${name}，先导入或添加学生`);
+    } catch {
+      setSaveStatus("error");
+      showToast("创建班级失败，请检查浏览器存储权限");
+    }
+  };
+
+  const createVersion = (name: string, mode: VersionCopyMode) => {
+    const nextProject: ProjectState = mode === "current"
+      ? structuredClone(history.value)
+      : {
+        ...structuredClone(history.value),
+        solutionConfirmed: false,
+        assignments: {},
+        constraints: [],
+      };
+    try {
+      saveProjectState(currentClass, currentVersion, history.value);
+      saveProjectState(currentClass, name, nextProject);
+      setWorkspaceCatalog((current) => ({
+        ...current,
+        versionsByClass: {
+          ...current.versionsByClass,
+          [currentClass]: [...(current.versionsByClass[currentClass] ?? []), name],
+        },
+      }));
+      history.reset(nextProject);
+      setCurrentVersion(name);
+      setCandidates([]);
+      setActiveCandidateId(undefined);
+      setCreateVersionOpen(false);
+      setSavedAt(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
+      showToast(`已创建并切换到${name}`);
+    } catch {
+      setSaveStatus("error");
+      showToast("创建座位版本失败，请检查浏览器存储权限");
+    }
+  };
+
+  const clearCurrentClass = () => {
+    history.commit((current) => ({
+      ...current,
+      students: [],
+      assignments: {},
+      constraints: [],
+      solutionConfirmed: false,
+    }));
+    setSelectedIds([]);
+    setRuleConflicts([]);
+    setCandidates([]);
+    setActiveCandidateId(undefined);
+    setCurrentStep("roster");
+    setClearClassOpen(false);
+    showToast(`${currentClass}名单已清空，可使用撤销恢复`);
+  };
+
+  const deleteCurrentClass = () => {
+    if (classOptions.length <= 1) {
+      setDeleteWorkspaceTarget(undefined);
+      showToast("至少需要保留一个班级");
+      return;
+    }
+    try {
+      const deletedClass = currentClass;
+      const deletedIndex = classOptions.indexOf(deletedClass);
+      const deletedVersions = workspaceCatalog.versionsByClass[deletedClass] ?? [];
+      deletedVersions.forEach((versionName) => deleteProjectState(deletedClass, versionName));
+      const remainingClasses = classOptions.filter((className) => className !== deletedClass);
+      const nextClass = remainingClasses[Math.min(Math.max(deletedIndex, 0), remainingClasses.length - 1)];
+      const nextVersions = workspaceCatalog.versionsByClass[nextClass] ?? DEFAULT_VERSIONS;
+      const nextVersion = nextVersions[0];
+      const nextProject = loadProjectState(nextClass, nextVersion);
+      setWorkspaceCatalog((current) => {
+        const versionsByClass = { ...current.versionsByClass };
+        delete versionsByClass[deletedClass];
+        return { classes: current.classes.filter((className) => className !== deletedClass), versionsByClass };
+      });
+      history.reset(nextProject);
+      setCurrentClass(nextClass);
+      setCurrentVersion(nextVersion);
+      setCurrentStep("roster");
+      setTool("select");
+      setSelectedIds([]);
+      setRuleConflicts([]);
+      setCandidates([]);
+      setActiveCandidateId(undefined);
+      setPrintMode(false);
+      setDeleteWorkspaceTarget(undefined);
+      setSavedAt((loadSavedAt(nextClass, nextVersion) ?? new Date()).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
+      setSaveStatus("saved");
+      showToast(`已删除班级${deletedClass}`);
+    } catch {
+      setSaveStatus("error");
+      showToast("删除班级失败，请检查浏览器存储权限");
+    }
+  };
+
+  const deleteCurrentVersion = () => {
+    if (versionOptions.length <= 1) {
+      setDeleteWorkspaceTarget(undefined);
+      showToast("每个班级至少需要保留一个座位版本");
+      return;
+    }
+    try {
+      const deletedVersion = currentVersion;
+      const deletedIndex = versionOptions.indexOf(deletedVersion);
+      deleteProjectState(currentClass, deletedVersion);
+      const remainingVersions = versionOptions.filter((versionName) => versionName !== deletedVersion);
+      const nextVersion = remainingVersions[Math.min(Math.max(deletedIndex, 0), remainingVersions.length - 1)];
+      const nextProject = loadProjectState(currentClass, nextVersion);
+      setWorkspaceCatalog((current) => ({
+        ...current,
+        versionsByClass: { ...current.versionsByClass, [currentClass]: remainingVersions },
+      }));
+      history.reset(nextProject);
+      setCurrentVersion(nextVersion);
+      setCurrentStep("roster");
+      setTool("select");
+      setSelectedIds([]);
+      setRuleConflicts([]);
+      setCandidates([]);
+      setActiveCandidateId(undefined);
+      setPrintMode(false);
+      setDeleteWorkspaceTarget(undefined);
+      setSavedAt((loadSavedAt(currentClass, nextVersion) ?? new Date()).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
+      setSaveStatus("saved");
+      showToast(`已删除座位版本${deletedVersion}`);
+    } catch {
+      setSaveStatus("error");
+      showToast("删除座位版本失败，请检查浏览器存储权限");
+    }
+  };
+
+  const finishOnboarding = () => {
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, new Date().toISOString());
+    setOnboardingOpen(false);
+  };
+
   const saveStudent = (student: Student) => {
     const isEditing = Boolean(student.id);
     const savedStudent = isEditing
@@ -316,7 +549,7 @@ function App() {
 
   const swapSeats = (fromSeatId: string, toSeatId: string) => {
     history.commit((current) => {
-      const assignments = { ...current.assignments };
+      const assignments = { ...(activeCandidate?.assignments ?? current.assignments) };
       const fromStudent = assignments[fromSeatId];
       const toStudent = assignments[toSeatId];
       assignments[toSeatId] = fromStudent;
@@ -333,7 +566,7 @@ function App() {
   const seatStudent = (studentId: string, seatId: string) => {
     history.commit((current) => {
       const assignments = Object.fromEntries(
-        Object.entries(current.assignments).filter(([, assignedStudentId]) => assignedStudentId !== studentId),
+        Object.entries(activeCandidate?.assignments ?? current.assignments).filter(([, assignedStudentId]) => assignedStudentId !== studentId),
       );
       assignments[seatId] = studentId;
       return { ...current, solutionConfirmed: false, assignments };
@@ -377,12 +610,12 @@ function App() {
   };
 
   const clearCanvasSeat = (seatId: string) => {
-    if (!history.value.assignments[seatId]) {
+    if (!displayAssignments[seatId]) {
       showToast("这个座位已经是空位");
       return;
     }
     history.commit((current) => {
-      const assignments = { ...current.assignments };
+      const assignments = { ...(activeCandidate?.assignments ?? current.assignments) };
       delete assignments[seatId];
       return { ...current, solutionConfirmed: false, assignments };
     });
@@ -402,13 +635,14 @@ function App() {
   };
 
   const changeLayoutPreset = (nextPreset: LayoutPresetId) => {
-    const nextSeats = createPresetSeats(nextPreset);
+    const presetSeats = createPresetSeats(nextPreset);
+    const nextSeats = [...presetSeats, ...createGuardianSeats(history.value.guardianSides)];
     const presetDefinition = getLayoutPreset(nextPreset);
     const validSeatIds = new Set(nextSeats.map((seat) => seat.id));
     const preservedDisabled = history.value.disabledSeatIds.filter((seatId) => validSeatIds.has(seatId));
     const nextDisabled = preservedDisabled.length || nextSeats.length === 0
       ? preservedDisabled
-      : [nextSeats[Math.floor(nextSeats.length * 0.58)]?.id, nextSeats.at(-2)?.id].filter((id): id is string => Boolean(id));
+      : [presetSeats[Math.floor(presetSeats.length * 0.58)]?.id, presetSeats.at(-2)?.id].filter((id): id is string => Boolean(id));
     const assignments = remapAssignments(history.value.assignments, nextSeats, nextDisabled, students);
     history.commit((current) => ({
       ...current,
@@ -433,7 +667,7 @@ function App() {
   };
 
   const changeLayoutConfig = (config: LayoutConfig, aisleWidth = history.value.aisleWidth) => {
-    const nextSeats = createGridSeats(config);
+    const nextSeats = [...createGridSeats(config), ...createGuardianSeats(history.value.guardianSides)];
     const validSeatIds = new Set(nextSeats.map((seat) => seat.id));
     const nextDisabled = history.value.disabledSeatIds.filter((seatId) => validSeatIds.has(seatId));
     const assignments = remapAssignments(history.value.assignments, nextSeats, nextDisabled, students);
@@ -451,6 +685,45 @@ function App() {
     setCandidates([]);
     setActiveCandidateId(undefined);
     setGenerationPulse((current) => current + 1);
+  };
+
+  const toggleGuardianSeat = (side: GuardianSide) => {
+    const seatId = `seat-guardian-${side}`;
+    const enabled = history.value.guardianSides.includes(side);
+    history.commit((current) => {
+      const guardianSides = enabled
+        ? current.guardianSides.filter((value) => value !== side)
+        : (["left", "right"] as const).filter((value) => value === side || current.guardianSides.includes(value));
+      const assignments = { ...current.assignments };
+      const seatPositions = { ...current.seatPositions };
+      if (enabled) {
+        delete assignments[seatId];
+        delete seatPositions[seatId];
+      }
+      return {
+        ...current,
+        solutionConfirmed: false,
+        assignments,
+        disabledSeatIds: enabled ? current.disabledSeatIds.filter((id) => id !== seatId) : current.disabledSeatIds,
+        guardianSides: [...guardianSides],
+        seatPositions,
+      };
+    });
+    setCandidates([]);
+    setActiveCandidateId(undefined);
+    showToast(`${side === "left" ? "左" : "右"}护法座已${enabled ? "移除" : "添加"}`);
+  };
+
+  const toggleDoorPlacement = (placement: DoorPlacement) => {
+    const enabled = history.value.doorPlacements.includes(placement);
+    history.commit((current) => ({
+      ...current,
+      doorPlacements: DOOR_PLACEMENT_ORDER.filter((value) => (
+        enabled ? current.doorPlacements.includes(value) && value !== placement : current.doorPlacements.includes(value) || value === placement
+      )),
+    }));
+    const label = `${placement.includes("front") ? "前方" : "后方"}${placement.includes("left") ? "左侧" : "右侧"}`;
+    showToast(`已${enabled ? "移除" : "添加"}${label}教室门`);
   };
 
   const toggleSeatDisabled = (seatId: string) => {
@@ -481,7 +754,7 @@ function App() {
     setRuleConflicts([]);
     setCandidates([]);
     setActiveCandidateId(undefined);
-    showToast(`已添加 ${nextConstraints.length} 条规则，请点击重排座位`);
+    showToast(`已添加 ${nextConstraints.length} 条规则，将在生成方案时应用`);
   };
 
   const deleteConstraintBatch = (batchId: string) => {
@@ -497,26 +770,6 @@ function App() {
     showToast("规则批次已删除");
   };
 
-  const rearrangeByRules = () => {
-    if (!history.value.constraints.length) return;
-    rearrangeSeed.current += 1;
-    const result = rearrangeAssignments(
-      history.value.assignments,
-      layoutSeats,
-      history.value.constraints,
-      rearrangeSeed.current,
-    );
-    history.commit((current) => ({ ...current, solutionConfirmed: false, assignments: result.assignments }));
-    setCandidates([]);
-    setActiveCandidateId(undefined);
-    setGenerationPulse((current) => current + 1);
-    showToast(
-      result.violationCount > 0
-        ? `已重排，仍有 ${result.violationCount} 条规则暂时无法满足`
-        : `已按 ${history.value.constraints.length} 条规则重排，移动 ${result.movedStudentCount} 人`,
-    );
-  };
-
   const generateSolutions = () => {
     generationSequence.current += 1;
     const nextCandidates = createCandidates(
@@ -524,7 +777,7 @@ function App() {
       layoutSeats,
       history.value.constraints,
       students,
-      algorithm,
+      { strategies: algorithms, separateGenders },
       generationWeights,
       generationSequence.current,
     );
@@ -537,6 +790,7 @@ function App() {
   const applyCandidate = () => {
     if (!activeCandidate) return;
     history.commit((current) => ({ ...current, solutionConfirmed: true, assignments: activeCandidate.assignments }));
+    setApplyCandidateConfirmOpen(false);
     setCandidates([]);
     setActiveCandidateId(undefined);
     showToast(`${activeCandidate.label}已应用`);
@@ -585,12 +839,12 @@ function App() {
       return;
     }
     if (step === "export" && activeCandidate) {
-      setCurrentStep("generate");
+      setCurrentStep("seating");
       showToast("请先应用候选方案，再进入导出");
       return;
     }
     if (step === "export" && !history.value.solutionConfirmed) {
-      setCurrentStep("generate");
+      setCurrentStep("seating");
       showToast("请先生成并应用一个候选方案");
       return;
     }
@@ -600,24 +854,29 @@ function App() {
     }
     setCurrentStep(step);
     setPrintMode(false);
-    if (step !== "generate") {
+    if (step === "seating") setTool("select");
+    if (step !== "seating") {
       setCandidates([]);
       setActiveCandidateId(undefined);
     }
   }
 
   const renderPrimaryAction = () => {
-    if (currentStep === "generate" && activeCandidate) {
-      if ((activeCandidate.metrics?.hardRuleViolations ?? 0) > 0) {
-        return <button className="workflow-primary" type="button" onClick={() => setCandidateInfoOpen(true)}>查看未满足规则 <Info size={17} /></button>;
-      }
-      return <button className="workflow-primary" type="button" onClick={applyCandidate}>应用此方案 <Check size={17} /></button>;
-    }
-    if (currentStep === "generate" && history.value.solutionConfirmed) {
-      return <button className="workflow-primary" type="button" onClick={() => handleStepChange("export")}><Check size={17} />方案已应用，下一步 <ArrowRight size={17} /></button>;
-    }
-    if (currentStep === "generate") {
-      return <button className="workflow-primary" type="button" onClick={generateSolutions}>生成方案 <Sparkles size={17} /></button>;
+    if (currentStep === "seating") {
+      const unavailableReason = history.value.solutionConfirmed
+        ? "当前方案已经应用"
+        : "请先在右侧“方案”页生成并选择一个候选方案";
+      return (
+        <button
+          className="workflow-primary"
+          type="button"
+          disabled={!activeCandidate}
+          title={activeCandidate ? "确认应用当前预览的候选方案" : unavailableReason}
+          onClick={() => setApplyCandidateConfirmOpen(true)}
+        >
+          <Check size={17} />应用当前方案
+        </button>
+      );
     }
     if (currentStep === "export") {
       return <span className="workflow-ready"><Check size={16} />导出设置就绪</span>;
@@ -626,13 +885,12 @@ function App() {
   };
 
   const isCanvasStep = currentStep === "layout"
-    || currentStep === "rules"
-    || currentStep === "generate"
+    || currentStep === "seating"
     || (currentStep === "export" && exportFormat !== "xlsx");
 
   const enterPrintMode = () => {
     printReturnStep.current = currentStep;
-    if (!isCanvasStep) setCurrentStep("rules");
+    if (!isCanvasStep) setCurrentStep("seating");
     setPrintMode(true);
   };
 
@@ -657,12 +915,22 @@ function App() {
             canUndo={history.canUndo}
             canRedo={history.canRedo}
             printMode={printMode}
-            onClassChange={(value) => switchWorkspace(value, currentVersion)}
+            onClassChange={(value) => {
+              const nextVersions = workspaceCatalog.versionsByClass[value] ?? DEFAULT_VERSIONS;
+              const nextVersion = nextVersions.includes(currentVersion) ? currentVersion : nextVersions[0];
+              switchWorkspace(value, nextVersion);
+            }}
             onVersionChange={(value) => switchWorkspace(currentClass, value)}
+            onCreateClass={() => setCreateClassOpen(true)}
+            onClearClass={() => setClearClassOpen(true)}
+            onDeleteClass={() => setDeleteWorkspaceTarget("class")}
+            onCreateVersion={() => setCreateVersionOpen(true)}
+            onDeleteVersion={() => setDeleteWorkspaceTarget("version")}
             onUndo={handleUndo}
             onRedo={handleRedo}
             onTogglePrint={enterPrintMode}
             onOpenSettings={() => setSettingsOpen(true)}
+            onOpenOnboarding={() => setOnboardingOpen(true)}
             onOpenLegal={() => setLegalOpen(true)}
             onThemeChange={(nextTheme) => {
               setTheme(nextTheme);
@@ -670,7 +938,7 @@ function App() {
               showToast(nextTheme === "cute" ? "已切换到猫爪可爱主题" : "已切换到简约主题");
             }}
           />
-          <div className="workflow-bar">
+          <div className="workflow-bar" data-tour-target="workflow">
             <Stepper current={currentStep} onChange={handleStepChange} />
             {renderPrimaryAction()}
           </div>
@@ -680,7 +948,7 @@ function App() {
       <main className={`workspace-grid step-${currentStep}`}>
         {!printMode && currentStep !== "export" && <ToolRail active={tool} onChange={setTool} />}
 
-        {!printMode && currentStep !== "export" && currentStep !== "layout" && (
+        {!printMode && currentStep === "seating" && (
           <RosterSidebar
             students={unseatedStudents}
             selectedIds={selectedIds}
@@ -709,7 +977,7 @@ function App() {
 
         {isCanvasStep && (
           <div className={`canvas-shell ${currentStep === "export" ? "export-canvas-preview" : ""}`}>
-            {!printMode && currentStep === "generate" && candidates.length > 0 && (
+            {!printMode && currentStep === "seating" && candidates.length > 0 && (
               <div className="candidate-bar">
                 {candidates.map((candidate) => (
                   <button
@@ -733,12 +1001,12 @@ function App() {
               assignments={currentStep === "layout" ? EMPTY_LAYOUT_ASSIGNMENTS : displayAssignments}
               selectedStudentIds={printMode ? [] : selectedIds}
               constraints={history.value.constraints}
-              previewRuleType={!printMode && currentStep === "rules" ? selectedRule : undefined}
+              previewRuleType={!printMode && currentStep === "seating" ? selectedRule : undefined}
               tool={currentStep === "export" ? "select" : tool}
               reducedMotion={reducedMotion}
               generationPulse={generationPulse}
               printMode={printMode || currentStep === "export"}
-              doorPlacement={doorPlacement}
+              doorPlacements={doorPlacements}
               theme={theme}
               aisleWidth={history.value.aisleWidth}
               podiumPosition={history.value.podiumPosition}
@@ -760,9 +1028,7 @@ function App() {
               <CanvasRuleSummary
                 constraints={history.value.constraints}
                 students={students}
-                needsRearrange={rulesNeedRearrange}
                 onDeleteBatch={deleteConstraintBatch}
-                onRearrange={rearrangeByRules}
               />
             )}
             {currentStep === "export" && <div className="canvas-export-status">当前画布 · 原样导出</div>}
@@ -772,17 +1038,16 @@ function App() {
         {!printMode && currentStep === "layout" && (
           <LayoutPanel
             preset={layoutPreset}
-            doorPlacement={doorPlacement}
+            doorPlacements={doorPlacements}
+            guardianSides={history.value.guardianSides}
             disabledSeatCount={history.value.disabledSeatIds.length}
             groups={history.value.layoutConfig.groups}
             rows={history.value.layoutConfig.rows}
             seatsPerDesk={history.value.layoutConfig.columns}
             aisleWidth={history.value.aisleWidth}
             onPresetChange={changeLayoutPreset}
-            onDoorPlacementChange={(placement) => {
-              history.commit((current) => ({ ...current, doorPlacement: placement }));
-              showToast(`教室门已移到${placement.includes("front") ? "前方" : "后方"}${placement.includes("left") ? "左侧" : "右侧"}`);
-            }}
+            onDoorPlacementToggle={toggleDoorPlacement}
+            onGuardianToggle={toggleGuardianSeat}
             onRowsChange={(rows) => {
               changeLayoutConfig({ ...history.value.layoutConfig, rows });
               showToast(`每组排数已调整为 ${rows}`);
@@ -801,12 +1066,13 @@ function App() {
               setGenerationPulse((current) => current + 1);
               showToast("布局已等距居中");
             }}
-            onNext={() => handleStepChange("rules")}
+            onNext={() => handleStepChange("seating")}
           />
         )}
 
-        {!printMode && currentStep === "rules" && (
-          <RulePanel
+        {!printMode && currentStep === "seating" && (
+          <SeatingPanel
+            students={students}
             selectedStudents={selectedStudents}
             selectedRule={selectedRule}
             constraints={history.value.constraints}
@@ -818,18 +1084,22 @@ function App() {
             onRemoveSelected={(studentId) => setSelectedIds((current) => current.filter((id) => id !== studentId))}
             onClearSelection={() => setSelectedIds([])}
             onAddRule={addRule}
-            needsRearrange={rulesNeedRearrange}
-            onRearrange={rearrangeByRules}
             onDeleteConstraintBatch={deleteConstraintBatch}
-          />
-        )}
-
-        {!printMode && currentStep === "generate" && (
-          <GeneratePanel
-            algorithm={algorithm}
+            algorithms={algorithms}
+            separateGenders={separateGenders}
             weights={generationWeights}
-            onAlgorithmChange={(value) => {
-              setAlgorithm(value);
+            onAlgorithmToggle={(value) => {
+              setAlgorithms((current) => {
+                if (value === "random") return ["random"];
+                const withoutRandom = current.filter((strategy) => strategy !== "random");
+                if (!withoutRandom.includes(value)) return [...withoutRandom, value];
+                return withoutRandom.length === 1 ? withoutRandom : withoutRandom.filter((strategy) => strategy !== value);
+              });
+              setCandidates([]);
+              setActiveCandidateId(undefined);
+            }}
+            onSeparateGendersChange={(value) => {
+              setSeparateGenders(value);
               setCandidates([]);
               setActiveCandidateId(undefined);
             }}
@@ -980,12 +1250,60 @@ function App() {
         />
       )}
 
+      {applyCandidateConfirmOpen && activeCandidate && (
+        <ApplyCandidateDialog
+          candidate={activeCandidate}
+          onClose={() => setApplyCandidateConfirmOpen(false)}
+          onConfirm={applyCandidate}
+        />
+      )}
+
+      {createClassOpen && (
+        <CreateClassDialog
+          existingNames={classOptions}
+          onClose={() => setCreateClassOpen(false)}
+          onCreate={createClass}
+        />
+      )}
+
+      {createVersionOpen && (
+        <CreateVersionDialog
+          existingNames={versionOptions}
+          currentVersion={currentVersion}
+          onClose={() => setCreateVersionOpen(false)}
+          onCreate={createVersion}
+        />
+      )}
+
+      {clearClassOpen && (
+        <ClearClassDialog
+          className={currentClass}
+          versionName={currentVersion}
+          studentCount={students.length}
+          onClose={() => setClearClassOpen(false)}
+          onConfirm={clearCurrentClass}
+        />
+      )}
+
+      {deleteWorkspaceTarget && (
+        <DeleteWorkspaceDialog
+          kind={deleteWorkspaceTarget}
+          name={deleteWorkspaceTarget === "class" ? currentClass : currentVersion}
+          versionCount={versionOptions.length}
+          onClose={() => setDeleteWorkspaceTarget(undefined)}
+          onConfirm={deleteWorkspaceTarget === "class" ? deleteCurrentClass : deleteCurrentVersion}
+        />
+      )}
+
       {locked && <LockScreen onUnlock={() => setLocked(false)} />}
 
       {legalOpen && <LegalNoticeDialog onClose={() => {
         setLegalOpen(false);
         setLegalAcknowledged(Boolean(window.localStorage.getItem(LEGAL_STORAGE_KEY)));
+        if (!window.localStorage.getItem(ONBOARDING_STORAGE_KEY)) setOnboardingOpen(true);
       }} />}
+
+      {onboardingOpen && !legalOpen && <OnboardingTour onFinish={finishOnboarding} />}
     </div>
   );
 }

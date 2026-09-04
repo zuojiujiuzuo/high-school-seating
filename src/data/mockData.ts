@@ -1,4 +1,4 @@
-import type { AssignmentMap, SeatDefinition, Student } from "../types";
+import type { AssignmentMap, GenerationStrategy, SeatDefinition, Student } from "../types";
 import { createPresetSeats } from "../domain/layoutPresets";
 
 const names = [
@@ -36,10 +36,9 @@ export const initialAssignments: AssignmentMap = seats.reduce<AssignmentMap>((re
 export const initiallySelectedStudentIds = ["student-9", "student-10", "student-11", "student-12"];
 
 export const algorithmOptions = [
-  { id: "random", name: "随机排座", note: "让每次换位都有新鲜感" },
+  { id: "random", name: "随机排座", note: "单独使用，让每次换位都有新鲜感" },
   { id: "score_spread", name: "成绩均匀", note: "各区域成绩结构更平衡" },
   { id: "group_balanced", name: "小组均衡", note: "兼顾成绩、性别与组长" },
   { id: "height", name: "身高模式", note: "低个靠前，高个靠后" },
-  { id: "romance_guard", name: "防早恋模式", note: "优先同性同桌并分散风险组合" },
-  { id: "height_romance", name: "身高 + 防早恋", note: "综合两个目标进行权衡" },
-] as const;
+  { id: "romance_guard", name: "防早恋模式", note: "分散高关注的异性组合" },
+] as const satisfies readonly { id: GenerationStrategy; name: string; note: string }[];

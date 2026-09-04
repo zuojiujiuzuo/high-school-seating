@@ -7,6 +7,7 @@ import {
   Presentation,
   SquareDashed,
 } from "lucide-react";
+import { StyledTooltip } from "./StyledTooltip";
 
 export type ToolMode = "select" | "move" | "seat" | "aisle" | "podium" | "empty" | "disabled";
 
@@ -37,19 +38,23 @@ interface ToolRailProps {
 
 export function ToolRail({ active, onChange }: ToolRailProps) {
   return (
-    <aside className="tool-rail" aria-label="画布工具">
+    <aside className="tool-rail" aria-label="画布工具" data-tour-target="tools">
       {tools.map(({ id, icon: Icon }, index) => (
         <button
-          className={`tool-button ${active === id ? "is-active" : ""} ${index === 2 || index === 4 ? "tool-separator" : ""}`}
+          className={`tool-button has-styled-tooltip ${active === id ? "is-active" : ""} ${index === 2 || index === 4 ? "tool-separator" : ""}`}
           key={id}
           type="button"
           onClick={() => onChange(id)}
           aria-pressed={active === id}
           aria-label={`${toolDetails[id].label}：${toolDetails[id].description}`}
-          title={toolDetails[id].description}
         >
           <Icon size={20} strokeWidth={1.65} />
           <span>{toolDetails[id].label}</span>
+          <StyledTooltip
+            label={toolDetails[id].label}
+            description={toolDetails[id].description}
+            side="right"
+          />
         </button>
       ))}
     </aside>

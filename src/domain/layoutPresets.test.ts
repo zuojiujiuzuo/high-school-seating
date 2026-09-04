@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createPresetSeats, getLayoutPreset } from "./layoutPresets";
+import { createGuardianSeats, createPresetSeats, getLayoutPreset } from "./layoutPresets";
 
 describe("layout presets", () => {
   it.each([
@@ -19,5 +19,13 @@ describe("layout presets", () => {
     const seats = createPresetSeats("exam");
     expect(getLayoutPreset("exam").columns).toBe(1);
     expect(seats.every((seat) => seat.column === 0)).toBe(true);
+  });
+
+  it("creates optional ordinary seats on either side of the podium", () => {
+    const seats = createGuardianSeats(["right", "left"]);
+
+    expect(seats.map((seat) => seat.guardian)).toEqual(["left", "right"]);
+    expect(seats.map((seat) => seat.id)).toEqual(["seat-guardian-left", "seat-guardian-right"]);
+    expect(new Set(seats.map((seat) => seat.deskId)).size).toBe(2);
   });
 });

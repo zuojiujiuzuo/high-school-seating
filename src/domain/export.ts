@@ -38,7 +38,16 @@ function xmlEscape(value: string) {
 }
 
 function sortedSeats(seats: SeatDefinition[]) {
-  return [...seats].sort((a, b) => a.group - b.group || a.row - b.row || a.column - b.column);
+  return [...seats].sort((a, b) => {
+    if (a.guardian || b.guardian) {
+      if (a.guardian && b.guardian) {
+        const guardianOrder = { left: 0, right: 1 } as const;
+        return guardianOrder[a.guardian] - guardianOrder[b.guardian];
+      }
+      return a.guardian ? -1 : 1;
+    }
+    return a.group - b.group || a.row - b.row || a.column - b.column;
+  });
 }
 
 function studentForSeat(seat: SeatDefinition, assignments: AssignmentMap, studentMap: Map<string, Student>) {
@@ -84,9 +93,9 @@ async function buildWorkbook(options: SeatingExportOptions) {
   sortedSeats(options.seats).forEach((seat) => {
     const student = studentForSeat(seat, options.assignments, studentMap);
     const row = sheet.addRow([
-      `第 ${seat.group + 1} 组`,
-      seat.row + 1,
-      seat.column + 1,
+      seat.guardian ? "讲台护法" : `第 ${seat.group + 1} 组`,
+      seat.guardian ? "" : seat.row + 1,
+      seat.guardian ? (seat.guardian === "left" ? "左侧" : "右侧") : seat.column + 1,
       seat.disabled ? "" : student?.name ?? "",
       options.showGender ? student?.gender ?? "" : "",
       options.showStudentNo ? student?.studentNo ?? "" : "",
@@ -109,7 +118,7 @@ async function buildWorkbook(options: SeatingExportOptions) {
         cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: inkTheme ? "FFE5E5E5" : "FFE9E8E4" } };
       });
     }
-    if (options.showGroupBoundaries && seat.row === 0 && seat.column === 0) {
+    if (options.showGroupBoundaries && !seat.guardian && seat.row === 0 && seat.column === 0) {
       row.eachCell((cell) => {
         cell.border = { ...cell.border, top: { style: "medium", color: { argb: inkTheme ? "FF111111" : "FF2F6FED" } } };
       });
@@ -122,18 +131,20 @@ async function buildWorkbook(options: SeatingExportOptions) {
 
 function buildSvg(options: SeatingExportOptions) {
   const seats = sortedSeats(options.seats);
+  const classroomSeats = seats.filter((seat) => !seat.guardian);
+  const guardianSeats = seats.filter((seat) => seat.guardian);
   const studentMap = new Map(options.students.map((student) => [student.id, student]));
-  const groups = [...new Set(seats.map((seat) => seat.group))];
+  const groups = [...new Set(classroomSeats.map((seat) => seat.group))];
   const groupWidth = 188;
   const seatWidth = 76;
   const seatHeight = 42;
   const rowGap = 10;
   const groupGap = 28;
   const margin = 48;
-  const maxRows = Math.max(1, ...seats.map((seat) => seat.row + 1));
+  const maxRows = Math.max(1, ...classroomSeats.map((seat) => seat.row + 1));
   const width = Math.max(760, margin * 2 + groups.length * groupWidth + Math.max(0, groups.length - 1) * groupGap);
   const height = 170 + maxRows * (seatHeight + rowGap) + 70;
-  const seatNodes = groups.flatMap((group, groupIndex) => seats.filter((seat) => seat.group === group).map((seat) => {
+  const seatNodes = groups.flatMap((group, groupIndex) => classroomSeats.filter((seat) => seat.group === group).map((seat) => {
     const x = margin + groupIndex * (groupWidth + groupGap) + seat.column * (seatWidth + 8);
     const y = 156 + seat.row * (seatHeight + rowGap);
     const student = studentForSeat(seat, options.assignments, studentMap);
@@ -142,7 +153,14 @@ function buildSvg(options: SeatingExportOptions) {
       : [options.showGender ? student?.gender : "", options.showStudentNo ? student?.studentNo?.slice(-3) : ""].filter(Boolean).join(" · ");
     return `<g><rect x="${x}" y="${y}" width="${seatWidth}" height="${seatHeight}" rx="5" fill="${seat.disabled ? "#e9e8e4" : "#fffdf8"}" stroke="${seat.disabled ? "#c5c3bd" : "#aaa79f"}"/><text x="${x + seatWidth / 2}" y="${seat.disabled ? y + 26 : y + 18}" text-anchor="middle" font-size="${seat.disabled ? 13 : 12}" font-weight="${seat.disabled ? 600 : 700}" fill="${seat.disabled ? "#777670" : "#242521"}">${xmlEscape(seat.disabled ? "×" : student?.name ?? "空位")}</text>${detail ? `<text x="${x + seatWidth / 2}" y="${y + 33}" text-anchor="middle" font-size="9" fill="#6d6c66">${xmlEscape(detail)}</text>` : ""}</g>`;
   })).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#f8f5ed"/><text x="${margin}" y="44" font-size="13" fill="#6d6c66">${xmlEscape(options.versionName)}</text><text x="${margin}" y="78" font-size="26" font-weight="700" fill="#242521">${xmlEscape(options.className)}座次表</text><rect x="${width / 2 - 55}" y="100" width="110" height="34" rx="5" fill="#fffdf8" stroke="#242521"/><text x="${width / 2}" y="122" text-anchor="middle" font-size="13" font-weight="700">讲台</text>${seatNodes}<text x="${margin}" y="${height - 28}" font-size="10" fill="#6d6c66">班阵 · 本地生成</text></svg>`;
+  const guardianNodes = guardianSeats.map((seat) => {
+    const x = seat.guardian === "left" ? width / 2 - 55 - 18 - seatWidth : width / 2 + 55 + 18;
+    const student = studentForSeat(seat, options.assignments, studentMap);
+    const label = seat.guardian === "left" ? "左护法" : "右护法";
+    const content = seat.disabled ? "×" : student?.name ?? "空位";
+    return `<g><text x="${x + seatWidth / 2}" y="96" text-anchor="middle" font-size="9" font-weight="700" fill="#2f6fed">${label}</text><rect x="${x}" y="100" width="${seatWidth}" height="${seatHeight}" rx="5" fill="${seat.disabled ? "#e9e8e4" : "#eaf1ff"}" stroke="${seat.disabled ? "#c5c3bd" : "#2f6fed"}"/><text x="${x + seatWidth / 2}" y="126" text-anchor="middle" font-size="12" font-weight="700" fill="#242521">${xmlEscape(content)}</text></g>`;
+  }).join("");
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#f8f5ed"/><text x="${margin}" y="44" font-size="13" fill="#6d6c66">${xmlEscape(options.versionName)}</text><text x="${margin}" y="78" font-size="26" font-weight="700" fill="#242521">${xmlEscape(options.className)}座次表</text><rect x="${width / 2 - 55}" y="100" width="110" height="34" rx="5" fill="#fffdf8" stroke="#242521"/><text x="${width / 2}" y="122" text-anchor="middle" font-size="13" font-weight="700">讲台</text>${guardianNodes}${seatNodes}<text x="${margin}" y="${height - 28}" font-size="10" fill="#6d6c66">班阵 · 本地生成</text></svg>`;
 }
 
 function drawCuteBackdrop(context: CanvasRenderingContext2D, width: number, height: number, scale: number) {

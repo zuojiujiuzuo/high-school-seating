@@ -18,7 +18,8 @@ export const defaultProjectState: ProjectState = {
   podiumPosition: { x: 487, y: 42 },
   layoutPreset: "48-seat",
   layoutConfig: { groups: 4, rows: 6, columns: 2 },
-  doorPlacement: "front-right",
+  guardianSides: [],
+  doorPlacements: ["front-right"],
 };
 
 function scopedKey(prefix: string, className: string, versionName: string) {
@@ -36,6 +37,24 @@ function freshProject(className: string): ProjectState {
     seatPositions: {},
     layoutConfig: { ...defaultProjectState.layoutConfig },
     podiumPosition: { ...defaultProjectState.podiumPosition },
+    guardianSides: [...defaultProjectState.guardianSides],
+    doorPlacements: [...defaultProjectState.doorPlacements],
+  };
+}
+
+export function createEmptyProjectState(_className: string): ProjectState {
+  return {
+    ...defaultProjectState,
+    students: [],
+    assignments: {},
+    constraints: [],
+    disabledSeatIds: [],
+    customSeats: [],
+    seatPositions: {},
+    layoutConfig: { ...defaultProjectState.layoutConfig },
+    podiumPosition: { ...defaultProjectState.podiumPosition },
+    guardianSides: [],
+    doorPlacements: [...defaultProjectState.doorPlacements],
   };
 }
 
@@ -44,6 +63,14 @@ export function saveProjectState(className: string, versionName: string, project
   window.localStorage.setItem(scopedKey(PROJECT_STORAGE_KEY, className, versionName), JSON.stringify(project));
   window.localStorage.setItem(scopedKey(SAVED_AT_STORAGE_KEY, className, versionName), savedAt);
   return savedAt;
+}
+
+export function deleteProjectState(className: string, versionName: string) {
+  window.localStorage.removeItem(scopedKey(PROJECT_STORAGE_KEY, className, versionName));
+  window.localStorage.removeItem(scopedKey(SAVED_AT_STORAGE_KEY, className, versionName));
+  if (className === "高二（3）班" && versionName === "日常换位 · 第4期") {
+    window.localStorage.removeItem(PROJECT_STORAGE_KEY);
+  }
 }
 
 export function loadSavedAt(className: string, versionName: string) {
@@ -59,12 +86,22 @@ export function loadProjectState(className = "高二（3）班", versionName = "
       : null;
     const raw = scoped ?? legacy;
     if (!raw) return freshProject(className);
-    const stored = JSON.parse(raw) as Partial<ProjectState>;
+    const stored = JSON.parse(raw) as Partial<ProjectState> & { doorPlacement?: ProjectState["doorPlacements"][number] };
+    const guardianSides = Array.isArray(stored.guardianSides)
+      ? (["left", "right"] as const).filter((side) => stored.guardianSides?.includes(side))
+      : [];
+    const doorPlacements = Array.isArray(stored.doorPlacements)
+      ? (["front-left", "front-right", "back-left", "back-right"] as const).filter((placement) => stored.doorPlacements?.includes(placement))
+      : stored.doorPlacement
+        ? [stored.doorPlacement]
+        : [...defaultProjectState.doorPlacements];
     return {
       ...freshProject(className),
       ...stored,
       students: Array.isArray(stored.students) ? stored.students : freshProject(className).students,
       layoutConfig: { ...defaultProjectState.layoutConfig, ...stored.layoutConfig },
+      guardianSides,
+      doorPlacements,
     };
   } catch {
     return freshProject(className);

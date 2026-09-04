@@ -23,7 +23,7 @@ export interface SeatDefinition {
   /** Optional free-form canvas position used by the layout editor. */
   canvasX?: number;
   canvasY?: number;
-  guardian?: "left" | "right";
+  guardian?: GuardianSide;
 }
 
 export interface CanvasPoint {
@@ -65,14 +65,17 @@ export interface ProjectState {
   podiumPosition: CanvasPoint;
   layoutPreset: LayoutPresetId;
   layoutConfig: LayoutConfig;
-  doorPlacement: DoorPlacement;
+  guardianSides: GuardianSide[];
+  doorPlacements: DoorPlacement[];
 }
 
-export type WizardStep = "roster" | "layout" | "rules" | "generate" | "export";
+export type WizardStep = "roster" | "layout" | "seating" | "export";
 
 export type LayoutPresetId = "48-seat" | "54-seat" | "60-seat" | "exam" | "paired" | "blank";
 
 export type DoorPlacement = "front-left" | "front-right" | "back-left" | "back-right";
+
+export type GuardianSide = "left" | "right";
 
 export type AppTheme = "minimal" | "cute";
 
@@ -88,6 +91,18 @@ export interface GenerationWeights {
   appearance: number;
 }
 
+export type GenerationStrategy =
+  | "random"
+  | "score_spread"
+  | "group_balanced"
+  | "height"
+  | "romance_guard";
+
+export interface GenerationOptions {
+  strategies: GenerationStrategy[];
+  separateGenders: boolean;
+}
+
 export interface SeatingCandidate {
   id: string;
   label: string;
@@ -95,6 +110,8 @@ export interface SeatingCandidate {
   assignments: AssignmentMap;
   metrics?: {
     algorithm: string;
+    strategies: GenerationStrategy[];
+    separateGenders: boolean;
     hardRuleViolations: number;
     balanceScore: number;
   };

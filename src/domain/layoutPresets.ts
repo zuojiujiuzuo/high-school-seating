@@ -1,4 +1,4 @@
-import type { LayoutConfig, LayoutPresetId, SeatDefinition } from "../types";
+import type { GuardianSide, LayoutConfig, LayoutPresetId, SeatDefinition } from "../types";
 
 export interface LayoutPresetDefinition {
   id: LayoutPresetId;
@@ -39,4 +39,17 @@ export function createGridSeats(config: LayoutConfig): SeatDefinition[] {
       })),
     ).flat(),
   ).flat();
+}
+
+export function createGuardianSeats(sides: GuardianSide[]): SeatDefinition[] {
+  return (["left", "right"] as const)
+    .filter((side) => sides.includes(side))
+    .map((side) => ({
+      id: `seat-guardian-${side}`,
+      group: side === "left" ? -1 : -2,
+      row: 0,
+      column: 0,
+      deskId: `desk-guardian-${side}`,
+      guardian: side,
+    }));
 }

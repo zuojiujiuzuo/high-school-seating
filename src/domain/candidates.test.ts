@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AssignmentMap, GenerationWeights, Student } from "../types";
+import type { AssignmentMap, GenerationStrategy, GenerationWeights, Student } from "../types";
 import { createGridSeats } from "./layoutPresets";
 import { createCandidates } from "./candidates";
 
@@ -15,19 +15,23 @@ const students: Student[] = Array.from({ length: 8 }, (_, index) => ({
 const seats = createGridSeats({ groups: 2, rows: 2, columns: 2 });
 const assignments = seats.reduce<AssignmentMap>((result, seat, index) => ({ ...result, [seat.id]: students[index].id }), {});
 const weights: GenerationWeights = { score: 72, height: 58, appearance: 25 };
+const options = (strategies: GenerationStrategy[], separateGenders = false) => ({ strategies, separateGenders });
 
 describe("candidate generation", () => {
   it("returns three scored candidates with inspectable metrics", () => {
-    const candidates = createCandidates(assignments, seats, [], students, "group_balanced", weights, 1);
+    const candidates = createCandidates(assignments, seats, [], students, options(["group_balanced"]), weights, 1);
     expect(candidates).toHaveLength(3);
-    expect(candidates.every((candidate) => candidate.metrics?.algorithm === "group_balanced")).toBe(true);
+    expect(candidates.every((candidate) => (
+      candidate.metrics?.strategies.length === 1
+      && candidate.metrics.strategies[0] === "group_balanced"
+    ))).toBe(true);
     expect(Object.keys(candidates[0].assignments)).toHaveLength(8);
   });
 
-  it.each(["group_balanced", "height", "score_spread", "romance_guard", "height_romance"])(
+  it.each<GenerationStrategy>(["group_balanced", "height", "score_spread", "romance_guard"])(
     "returns visibly different candidates for %s",
     (algorithm) => {
-      const candidates = createCandidates(assignments, seats, [], students, algorithm, weights, 1);
+      const candidates = createCandidates(assignments, seats, [], students, options([algorithm]), weights, 1);
       const assignmentVariants = new Set(candidates.map((candidate) => JSON.stringify(candidate.assignments)));
 
       expect(assignmentVariants.size).toBe(3);
@@ -35,8 +39,8 @@ describe("candidate generation", () => {
   );
 
   it("changes candidate ids and ordering for a new generation", () => {
-    const first = createCandidates(assignments, seats, [], students, "random", weights, 1);
-    const second = createCandidates(assignments, seats, [], students, "random", weights, 2);
+    const first = createCandidates(assignments, seats, [], students, options(["random"]), weights, 1);
+    const second = createCandidates(assignments, seats, [], students, options(["random"]), weights, 2);
     expect(first[0].id).not.toBe(second[0].id);
     expect(first[0].assignments).not.toEqual(second[0].assignments);
   });
@@ -45,7 +49,43 @@ describe("candidate generation", () => {
     const partialAssignments: AssignmentMap = Object.fromEntries(
       seats.slice(0, 6).map((seat, index) => [seat.id, students[index].id]),
     );
-    const candidates = createCandidates(partialAssignments, seats, [], students, "group_balanced", weights, 1);
+    const candidates = createCandidates(partialAssignments, seats, [], students, options(["group_balanced"]), weights, 1);
     expect(new Set(Object.values(candidates[0].assignments))).toEqual(new Set(students.map((student) => student.id)));
+  });
+
+  it("combines multiple strategies and records the active combination", () => {
+    const candidates = createCandidates(
+      assignments,
+      seats,
+      [],
+      students,
+      options(["score_spread", "height"]),
+      weights,
+      1,
+    );
+
+    expect(candidates[0].metrics?.strategies).toEqual(["score_spread", "height"]);
+  });
+
+  it("keeps desk mates the same gender when gender separation is enabled", () => {
+    const candidate = createCandidates(
+      assignments,
+      seats,
+      [],
+      students,
+      options(["group_balanced"], true),
+      weights,
+      1,
+    )[0];
+    const studentById = new Map(students.map((student) => [student.id, student]));
+    const seatsByDesk = new Map<string, typeof seats>();
+    seats.forEach((seat) => {
+      seatsByDesk.set(seat.deskId, [...(seatsByDesk.get(seat.deskId) ?? []), seat]);
+    });
+
+    seatsByDesk.forEach((deskSeats) => {
+      const deskStudents = deskSeats.map((seat) => studentById.get(candidate.assignments[seat.id] ?? "")).filter(Boolean);
+      if (deskStudents.length === 2) expect(deskStudents[0]?.gender).toBe(deskStudents[1]?.gender);
+    });
   });
 });

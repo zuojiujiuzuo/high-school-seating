@@ -1,4 +1,4 @@
-import { ChevronDown, ListChecks, RotateCcw, Trash2 } from "lucide-react";
+import { ChevronDown, ListChecks, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ruleLabels } from "../domain/rules";
 import type { SeatingConstraint, Student } from "../types";
@@ -6,17 +6,13 @@ import type { SeatingConstraint, Student } from "../types";
 interface CanvasRuleSummaryProps {
   constraints: SeatingConstraint[];
   students: Student[];
-  needsRearrange: boolean;
   onDeleteBatch: (batchId: string) => void;
-  onRearrange: () => void;
 }
 
 export function CanvasRuleSummary({
   constraints,
   students,
-  needsRearrange,
   onDeleteBatch,
-  onRearrange,
 }: CanvasRuleSummaryProps) {
   const [open, setOpen] = useState(false);
   const studentNames = useMemo(
@@ -55,7 +51,6 @@ export function CanvasRuleSummary({
           <small>画布规则</small>
           <strong>{constraints.length} 条自定义规则</strong>
         </span>
-        {needsRearrange && <em>待重排</em>}
         <ChevronDown className="canvas-rule-chevron" size={16} />
       </button>
 
@@ -63,9 +58,6 @@ export function CanvasRuleSummary({
         <section className="canvas-rule-popover" id="canvas-rule-list" aria-label="已添加的自定义规则">
           <header>
             <div><strong>自定义规则</strong><small>{batches.length} 组，共 {constraints.length} 条关系</small></div>
-            <button type="button" onClick={onRearrange} title="按现有规则重排座位">
-              <RotateCcw size={14} />重排
-            </button>
           </header>
           <div className="canvas-rule-batches">
             {batches.map((batch) => (
@@ -80,7 +72,6 @@ export function CanvasRuleSummary({
                   className="canvas-rule-delete"
                   type="button"
                   aria-label={`删除“${ruleLabels[batch.type]}”规则`}
-                  title="删除这组规则"
                   onClick={() => onDeleteBatch(batch.batchId)}
                 >
                   <Trash2 size={15} />
@@ -88,7 +79,7 @@ export function CanvasRuleSummary({
               </article>
             ))}
           </div>
-          <p>删除规则后，画布上的关系标记会立即同步。</p>
+          <p>规则会在生成方案时统一应用；删除后，画布关系标记会立即同步。</p>
         </section>
       )}
     </div>

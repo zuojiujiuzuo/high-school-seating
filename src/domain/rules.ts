@@ -31,6 +31,16 @@ export function allPairs(studentIds: string[]): StudentPair[] {
   return pairs;
 }
 
+export function constraintsForSelectedStudents(
+  constraints: SeatingConstraint[],
+  selectedStudentIds: string[],
+): SeatingConstraint[] {
+  if (!constraints.length || !selectedStudentIds.length) return [];
+
+  const selected = new Set(selectedStudentIds);
+  return constraints.filter(({ pair }) => selected.has(pair.a) || selected.has(pair.b));
+}
+
 export function sequentialPairs(studentIds: string[]): StudentPair[] {
   const unique = [...new Set(studentIds)];
   if (unique.length % 2 !== 0) return [];

@@ -21,12 +21,15 @@ import {
   UserRoundX,
   UsersRound,
 } from "lucide-react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { algorithmOptions } from "../data/mockData";
 import { layoutPresets } from "../domain/layoutPresets";
 import { plannedPairCount, ruleLabels } from "../domain/rules";
 import type {
   ConstraintType,
   DoorPlacement,
+  GuardianSide,
+  GenerationStrategy,
   LayoutPresetId,
   RuleConflict,
   SeatingConstraint,
@@ -70,14 +73,16 @@ export function RosterPanel({ onImport, onAddStudent, onNext }: RosterPanelProps
 
 interface LayoutPanelProps {
   preset: LayoutPresetId;
-  doorPlacement: DoorPlacement;
+  doorPlacements: DoorPlacement[];
+  guardianSides: GuardianSide[];
   disabledSeatCount: number;
   groups: number;
   rows: number;
   seatsPerDesk: 1 | 2;
   aisleWidth: number;
   onPresetChange: (preset: LayoutPresetId) => void;
-  onDoorPlacementChange: (placement: DoorPlacement) => void;
+  onDoorPlacementToggle: (placement: DoorPlacement) => void;
+  onGuardianToggle: (side: GuardianSide) => void;
   onRowsChange: (rows: number) => void;
   onSeatsPerDeskChange: (seatsPerDesk: 1 | 2) => void;
   onOpenAdvanced: () => void;
@@ -94,14 +99,16 @@ const doorOptions: { id: DoorPlacement; label: string }[] = [
 
 export function LayoutPanel({
   preset,
-  doorPlacement,
+  doorPlacements,
+  guardianSides,
   disabledSeatCount,
   groups,
   rows,
   seatsPerDesk,
   aisleWidth,
   onPresetChange,
-  onDoorPlacementChange,
+  onDoorPlacementToggle,
+  onGuardianToggle,
   onRowsChange,
   onSeatsPerDeskChange,
   onOpenAdvanced,
@@ -109,7 +116,7 @@ export function LayoutPanel({
   onNext,
 }: LayoutPanelProps) {
   return (
-    <aside className="inspector-panel">
+    <aside className="inspector-panel layout-inspector-panel">
       <PanelHeading eyebrow="教室结构" title="布局预设" note="地点大组与学生小组相互独立。" />
       <div className="preset-grid">
         {layoutPresets.map(({ id, label }) => (
@@ -121,19 +128,42 @@ export function LayoutPanel({
         ))}
       </div>
       <section className="panel-section door-section">
-        <div className="section-title-row"><h3>教室门</h3><small><DoorOpen size={13} />画布实时预览</small></div>
+        <div className="section-title-row"><h3>教室门</h3><small><DoorOpen size={13} />可多选 · 实时预览</small></div>
         <div className="door-options">
           {doorOptions.map((option) => (
             <button
-              className={doorPlacement === option.id ? "is-selected" : ""}
+              aria-pressed={doorPlacements.includes(option.id)}
+              className={doorPlacements.includes(option.id) ? "is-selected" : ""}
               key={option.id}
               type="button"
-              onClick={() => onDoorPlacementChange(option.id)}
+              onClick={() => onDoorPlacementToggle(option.id)}
             >
               <DoorOpen size={16} />{option.label}
             </button>
           ))}
         </div>
+      </section>
+      <section className="panel-section guardian-section">
+        <div className="section-title-row"><h3>讲台护法座</h3><small>可选普通座位</small></div>
+        <div className="guardian-options">
+          {(["left", "right"] as const).map((side) => {
+            const selected = guardianSides.includes(side);
+            return (
+              <button
+                aria-pressed={selected}
+                className={selected ? "is-selected" : ""}
+                key={side}
+                type="button"
+                onClick={() => onGuardianToggle(side)}
+              >
+                <UsersRound size={17} />
+                <span><strong>{side === "left" ? "左护法" : "右护法"}</strong><small>讲台{side === "left" ? "左" : "右"}侧</small></span>
+                {selected && <Check size={14} />}
+              </button>
+            );
+          })}
+        </div>
+        <p className="guardian-note">计入可用座位，可正常入座、换位、禁用与导出。</p>
       </section>
       <section className="panel-section compact-form">
         <div className="section-title-row"><h3>网格参数</h3><button className="text-button" type="button" onClick={onOpenAdvanced}>高级编辑</button></div>
@@ -167,7 +197,8 @@ export function LayoutPanel({
   );
 }
 
-interface RulePanelProps {
+interface SeatingPanelProps {
+  students: Student[];
   selectedStudents: Student[];
   selectedRule: ConstraintType;
   constraints: SeatingConstraint[];
@@ -176,9 +207,18 @@ interface RulePanelProps {
   onRemoveSelected: (studentId: string) => void;
   onClearSelection: () => void;
   onAddRule: () => void;
-  needsRearrange: boolean;
-  onRearrange: () => void;
   onDeleteConstraintBatch: (batchId: string) => void;
+  algorithms: GenerationStrategy[];
+  separateGenders: boolean;
+  weights: {
+    score: number;
+    height: number;
+    appearance: number;
+  };
+  onAlgorithmToggle: (algorithm: GenerationStrategy) => void;
+  onSeparateGendersChange: (value: boolean) => void;
+  onWeightChange: (key: "score" | "height" | "appearance", value: number) => void;
+  onGenerate: () => void;
 }
 
 const ruleOptions: { id: ConstraintType; icon: typeof UsersRound; note: string }[] = [
@@ -188,7 +228,8 @@ const ruleOptions: { id: ConstraintType; icon: typeof UsersRound; note: string }
   { id: "not_adjacent", icon: Unlink2, note: "离开八方向邻域" },
 ];
 
-export function RulePanel({
+export function SeatingPanel({
+  students,
   selectedStudents,
   selectedRule,
   constraints,
@@ -197,25 +238,155 @@ export function RulePanel({
   onRemoveSelected,
   onClearSelection,
   onAddRule,
-  needsRearrange,
-  onRearrange,
   onDeleteConstraintBatch,
-}: RulePanelProps) {
+  algorithms,
+  separateGenders,
+  weights,
+  onAlgorithmToggle,
+  onSeparateGendersChange,
+  onWeightChange,
+  onGenerate,
+}: SeatingPanelProps) {
+  const hasRuleSelection = selectedStudents.length >= 2;
+  const [activeTab, setActiveTab] = useState<"rules" | "solutions">(() => hasRuleSelection ? "rules" : "solutions");
+  const wasMultiSelectionRef = useRef(hasRuleSelection);
+  const ruleTabRef = useRef<HTMLButtonElement>(null);
+  const solutionTabRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (hasRuleSelection && !wasMultiSelectionRef.current) setActiveTab("rules");
+    if (!hasRuleSelection && activeTab === "rules") setActiveTab("solutions");
+    wasMultiSelectionRef.current = hasRuleSelection;
+  }, [activeTab, hasRuleSelection]);
+
+  const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (!hasRuleSelection) return;
+    let nextTab: "rules" | "solutions" | undefined;
+    if (event.key === "ArrowLeft" || event.key === "ArrowUp" || event.key === "Home") nextTab = "rules";
+    if (event.key === "ArrowRight" || event.key === "ArrowDown" || event.key === "End") nextTab = "solutions";
+    if (!nextTab) return;
+    event.preventDefault();
+    setActiveTab(nextTab);
+    requestAnimationFrame(() => (nextTab === "rules" ? ruleTabRef.current : solutionTabRef.current)?.focus());
+  };
+
+  if (selectedStudents.length === 1) {
+    const student = selectedStudents[0];
+    const studentNames = new Map(students.map((item) => [item.id, item.name]));
+    const relatedRules = constraints.filter((constraint) => (
+      constraint.pair.a === student.id || constraint.pair.b === student.id
+    ));
+    const details = [
+      ["性别", student.gender],
+      ["班级", student.className],
+      ["学号", student.studentNo || "未填写"],
+      ["成绩", student.score ?? "未填写"],
+      ["身高", student.height ? `${student.height} cm` : "未填写"],
+      ["颜值", student.appearance ?? "未填写"],
+    ];
+
+    return (
+      <aside className="inspector-panel seating-panel student-inspector-panel">
+        <PanelHeading eyebrow="学生信息" title={student.name} note="当前选中 1 名学生；继续选择其他学生后进入规则配置。" />
+        <div className="student-profile-card">
+          <span aria-hidden="true">{student.name.slice(0, 1)}</span>
+          <div><strong>{student.name}</strong><small>{student.className} · {student.gender}</small></div>
+          <button className="text-button" type="button" onClick={onClearSelection}>取消选择</button>
+        </div>
+        <section className="panel-section student-detail-section" aria-labelledby="student-basic-title">
+          <div className="section-title-row"><h3 id="student-basic-title">基本信息</h3><small>名单资料</small></div>
+          <dl className="student-detail-grid">
+            {details.map(([label, value]) => (
+              <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
+            ))}
+          </dl>
+        </section>
+        <section className="panel-section student-detail-section" aria-labelledby="student-tags-title">
+          <div className="section-title-row"><h3 id="student-tags-title">标签与备注</h3></div>
+          <div className="student-detail-tags">
+            {student.tags?.length ? student.tags.map((tag) => <span key={tag}>{tag}</span>) : <small>暂无标签</small>}
+          </div>
+          {student.notes && <p className="student-detail-note">{student.notes}</p>}
+        </section>
+        <section className="panel-section student-detail-section" aria-labelledby="student-rules-title">
+          <div className="section-title-row"><h3 id="student-rules-title">关联规则</h3><small>{relatedRules.length} 条</small></div>
+          {relatedRules.length ? (
+            <div className="student-related-rules">
+              {relatedRules.map((constraint) => {
+                const peerId = constraint.pair.a === student.id ? constraint.pair.b : constraint.pair.a;
+                return (
+                  <div key={constraint.id}>
+                    <span aria-hidden="true">规</span>
+                    <strong>{ruleLabels[constraint.type]}</strong>
+                    <small>与 {studentNames.get(peerId) ?? "未知学生"}</small>
+                  </div>
+                );
+              })}
+            </div>
+          ) : <p className="student-detail-empty">该学生暂未设置排座规则。</p>}
+        </section>
+        <div className="student-multi-select-hint"><UsersRound size={17} /><span><strong>需要设置规则？</strong>在画布中再选择至少 1 名学生。</span></div>
+      </aside>
+    );
+  }
+
   const positive = selectedRule === "desk_mate" || selectedRule === "adjacent";
   const hasOddPair = positive && selectedStudents.length > 2 && selectedStudents.length % 2 !== 0;
   const count = plannedPairCount(selectedRule, selectedStudents.length);
   const groupedConstraints = [...new Map(constraints.map((item) => [item.batchId, item])).values()].slice(-2).reverse();
 
   return (
-    <aside className="inspector-panel rule-panel">
-      <PanelHeading eyebrow="关系编排" title="自定义规则" note="选择学生，再定义他们之间的关系。" />
+    <aside className="inspector-panel rule-panel seating-panel seating-panel-with-dock">
+      <div className="seating-panel-scroll">
+      <PanelHeading
+        eyebrow="排座工作台"
+        title={activeTab === "rules" ? "规则配置" : "方案生成"}
+        note={activeTab === "rules" ? "为已选学生建立排座约束。" : "组合策略和数据权重，生成候选方案。"}
+        toolbar={(
+          <div className="seating-panel-tabs" role="tablist" aria-label="排座工作区">
+            <button
+              ref={ruleTabRef}
+              id="seating-tab-rules"
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "rules"}
+              aria-controls="seating-rules-panel"
+              aria-disabled={!hasRuleSelection}
+              tabIndex={activeTab === "rules" ? 0 : -1}
+              title={hasRuleSelection ? undefined : "选择至少两名学生后可设置规则"}
+              onClick={() => {
+                if (hasRuleSelection) setActiveTab("rules");
+              }}
+              onKeyDown={handleTabKeyDown}
+            >
+              规则
+            </button>
+            <button
+              ref={solutionTabRef}
+              id="seating-tab-solutions"
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "solutions"}
+              aria-controls="seating-solutions-panel"
+              tabIndex={activeTab === "solutions" ? 0 : -1}
+              onClick={() => setActiveTab("solutions")}
+              onKeyDown={handleTabKeyDown}
+            >
+              方案
+            </button>
+          </div>
+        )}
+      />
+      {activeTab === "rules" && hasRuleSelection && (
+          <section id="seating-rules-panel" className="seating-work-section seating-tab-panel" role="tabpanel" aria-labelledby="seating-tab-rules" tabIndex={0}>
+        <div className="section-title-row"><h3 id="seating-rules-title">设置规则</h3><small>可选</small></div>
       <div className="selected-heading">
         <strong>已选 {selectedStudents.length} 人</strong>
         {selectedStudents.length > 0 && <button className="text-button" type="button" onClick={onClearSelection}>清除</button>}
       </div>
       <div className="student-chip-list">
         {selectedStudents.length ? selectedStudents.map((student, index) => (
-          <button key={student.id} type="button" onClick={() => onRemoveSelected(student.id)} title="移出选择">
+          <button key={student.id} type="button" onClick={() => onRemoveSelected(student.id)} aria-label={`移出选择：${student.name}`}>
             <span>{index + 1}</span>{student.name}<b>×</b>
           </button>
         )) : <p className="selection-empty">在名单或座位图中选择至少两名学生</p>}
@@ -260,14 +431,12 @@ export function RulePanel({
       </button>
 
       {constraints.length > 0 && (
-        <div className={`rule-rearrange-card ${needsRearrange ? "needs-rearrange" : ""}`}>
+        <div className="rule-generation-card">
+          <Sparkles size={17} />
           <div>
-            <strong>{needsRearrange ? "规则已保存，座位尚未更新" : "画布已应用当前规则"}</strong>
-            <small>{needsRearrange ? "点击重排后，座位才会按新规则调整。" : "继续添加或删除规则后可再次重排。"}</small>
+            <strong>规则将在生成方案时应用</strong>
+            <small>新增或删除规则后，请在“方案”页签重新生成。</small>
           </div>
-          <button type="button" onClick={onRearrange}>
-            <RotateCcw size={16} />{needsRearrange ? "按规则重排座位" : "再次重排座位"}
-          </button>
         </div>
       )}
 
@@ -288,53 +457,49 @@ export function RulePanel({
         {conflicts.length ? <AlertTriangle size={18} /> : <Check size={18} />}
         <span><strong>{conflicts.length ? `${conflicts.length} 处规则冲突` : "当前无冲突"}</strong>{conflicts[0]?.message ?? "所有硬约束可以同时成立"}</span>
       </div>
-    </aside>
-  );
-}
-
-interface GeneratePanelProps {
-  algorithm: string;
-  weights: {
-    score: number;
-    height: number;
-    appearance: number;
-  };
-  onAlgorithmChange: (algorithm: string) => void;
-  onWeightChange: (key: "score" | "height" | "appearance", value: number) => void;
-  onGenerate: () => void;
-}
-
-export function GeneratePanel({ algorithm, weights, onAlgorithmChange, onWeightChange, onGenerate }: GeneratePanelProps) {
-  return (
-    <aside className="inspector-panel">
-      <PanelHeading eyebrow="自动排座" title="生成方案" note="硬约束先校验，再比较三个候选结果。" />
-      <section className="panel-section">
-        <h3>选择算法</h3>
-        <div className="algorithm-list">
-          {algorithmOptions.map((option) => (
-            <button className={algorithm === option.id ? "is-selected" : ""} key={option.id} type="button" onClick={() => onAlgorithmChange(option.id)}>
-              <span className="algorithm-radio" />
-              <span><strong>{option.name}</strong><small>{option.note}</small></span>
-            </button>
-          ))}
-        </div>
       </section>
-      <section className="panel-section weight-section">
+      )}
+
+      {activeTab === "solutions" && (
+      <section id="seating-solutions-panel" className="seating-work-section seating-tab-panel" role="tabpanel" aria-labelledby="seating-tab-solutions" tabIndex={0}>
+        <div className="section-title-row"><h3 id="seating-generation-title">生成方案</h3><small>比较 3 个候选</small></div>
+        <p className="section-note">生成时先满足已保存的硬规则，再按数据权重比较班级分布。</p>
+        <div className="section-title-row generation-strategy-heading"><h3>组合策略</h3><small>可多选</small></div>
+        <div className="algorithm-list">
+          {algorithmOptions.map((option) => {
+            const selected = algorithms.includes(option.id);
+            return (
+              <button aria-pressed={selected} className={selected ? "is-selected" : ""} key={option.id} type="button" onClick={() => onAlgorithmToggle(option.id)}>
+                <span className="algorithm-check">{selected && <Check size={10} strokeWidth={2.5} />}</span>
+                <span><strong>{option.name}</strong><small>{option.note}</small></span>
+              </button>
+            );
+          })}
+        </div>
+        <label className="toggle-row generation-gender-toggle">
+          <span className="generation-toggle-copy"><strong>男女分坐</strong><small>优先安排同性同桌，人数不均时保留最少混排</small></span>
+          <input type="checkbox" checked={separateGenders} onChange={(event) => onSeparateGendersChange(event.target.checked)} />
+          <span className="toggle-track" />
+        </label>
+        <section className="panel-section weight-section">
         <div className="section-title-row"><h3>数据权重</h3><small>自动平衡</small></div>
         <label><span>成绩</span><input type="range" min="0" max="100" value={weights.score} onChange={(event) => onWeightChange("score", Number(event.target.value))} /><output>{weights.score}%</output></label>
         <label><span>身高</span><input type="range" min="0" max="100" value={weights.height} onChange={(event) => onWeightChange("height", Number(event.target.value))} /><output>{weights.height}%</output></label>
         <label><span>颜值</span><input type="range" min="0" max="100" value={weights.appearance} onChange={(event) => onWeightChange("appearance", Number(event.target.value))} /><output>{weights.appearance}%</output></label>
-      </section>
-      <div className="coverage-card">
+        </section>
+        <div className="coverage-card">
         <strong>可用数据覆盖率</strong>
         <div><span style={{ width: "91%" }} /></div>
         <small>缺失值将使用班级中位数</small>
+        </div>
+        <button className="ai-entry" type="button" disabled><Sparkles size={17} /><span><strong>AI 自然语言排座</strong><small>计划于 v1.1 提供</small></span></button>
+        <p className="ai-review-note">AI 座位方案仅供参考，最终座位由老师人工确认。</p>
+      </section>
+      )}
       </div>
-      <button className="ai-entry" type="button" disabled><Sparkles size={17} /><span><strong>AI 自然语言排座</strong><small>计划于 v1.1 提供</small></span></button>
-      <p className="ai-review-note">AI 座位方案仅供参考，最终座位由老师人工确认。</p>
-      <div className="panel-footer">
-        <button className="primary-button full-width generate-button" type="button" onClick={onGenerate}><Sparkles size={18} />生成 3 个方案</button>
-      </div>
+      {activeTab === "solutions" && <div className="seating-generate-dock">
+        <button className="primary-button full-width generate-button seating-generate-button" type="button" onClick={onGenerate}><Sparkles size={18} />生成 3 个方案</button>
+      </div>}
     </aside>
   );
 }
@@ -441,10 +606,13 @@ export function ExportPanel({
   );
 }
 
-function PanelHeading({ eyebrow, title, note }: { eyebrow: string; title: string; note: string }) {
+function PanelHeading({ eyebrow, title, note, toolbar }: { eyebrow: string; title: string; note: string; toolbar?: ReactNode }) {
   return (
     <header className="panel-heading">
-      <span className="eyebrow">{eyebrow}</span>
+      <div className="panel-heading-top">
+        <span className="eyebrow">{eyebrow}</span>
+        {toolbar}
+      </div>
       <h2>{title}</h2>
       <p>{note}</p>
     </header>

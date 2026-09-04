@@ -3,6 +3,7 @@ import {
   allPairs,
   areSeatsAdjacent,
   countRuleViolations,
+  constraintsForSelectedStudents,
   findRuleConflicts,
   normalizePair,
   plannedPairCount,
@@ -40,6 +41,23 @@ describe("custom seating rules", () => {
     expect(findRuleConflicts([constraint("desk_mate"), constraint("not_desk_mate")])).toHaveLength(1);
     expect(findRuleConflicts([constraint("adjacent"), constraint("not_adjacent")])).toHaveLength(1);
     expect(findRuleConflicts([constraint("desk_mate"), constraint("not_adjacent")])).toHaveLength(1);
+  });
+
+  it("only exposes saved relationship lines for selected students with rules", () => {
+    const constraints = [
+      constraint("desk_mate", "a", "b"),
+      constraint("adjacent", "b", "c"),
+      constraint("not_adjacent", "d", "e"),
+    ];
+
+    expect(constraintsForSelectedStudents(constraints, [])).toEqual([]);
+    expect(constraintsForSelectedStudents(constraints, ["student-without-rules"])).toEqual([]);
+    expect(constraintsForSelectedStudents(constraints, ["a"])).toEqual([constraints[0]]);
+    expect(constraintsForSelectedStudents(constraints, ["b"])).toEqual(constraints.slice(0, 2));
+    expect(constraintsForSelectedStudents(constraints, ["a", "d"])).toEqual([
+      constraints[0],
+      constraints[2],
+    ]);
   });
 
   it("treats desk mates and eight-direction neighbors as adjacent", () => {
