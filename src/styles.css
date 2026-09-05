@@ -3764,6 +3764,7 @@ button:disabled {
   position: absolute;
   top: 50%;
   right: 8px;
+  z-index: 70;
   width: 28px;
   height: 28px;
   padding: 0;
