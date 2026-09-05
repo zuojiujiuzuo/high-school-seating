@@ -1,4 +1,4 @@
-import { CirclePlus, GripVertical, Search, Trash2, Upload } from "lucide-react";
+import { CirclePlus, GripVertical, PencilLine, Search, Trash2, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { Student } from "../types";
@@ -13,6 +13,7 @@ interface RosterSidebarProps {
   onDeleteStudent: (student: Student) => void;
   onOpenImport: () => void;
   onAddStudent: () => void;
+  onOpenStudentInfo: () => void;
 }
 
 export function RosterSidebar({
@@ -24,6 +25,7 @@ export function RosterSidebar({
   onDeleteStudent,
   onOpenImport,
   onAddStudent,
+  onOpenStudentInfo,
 }: RosterSidebarProps) {
   const [query, setQuery] = useState("");
   const [contextMenu, setContextMenu] = useState<{ studentId: string; x: number; y: number }>();
@@ -221,7 +223,7 @@ export function RosterSidebar({
             key={contextMenuStudent.id}
             studentName={contextMenuStudent.name}
             tags={contextMenuStudent.tags}
-            onAddTag={(tag) => onAddStudentTag(contextMenuStudent.id, tag)}
+            onToggleTag={(tag) => onAddStudentTag(contextMenuStudent.id, tag)}
           />
           <button
             className="student-context-menu-danger"
@@ -246,6 +248,10 @@ export function RosterSidebar({
         <button className="quiet-action" type="button" onClick={onAddStudent}>
           <CirclePlus size={16} />
           添加学生
+        </button>
+        <button className="quiet-action" type="button" onClick={onOpenStudentInfo}>
+          <PencilLine size={16} />
+          补充信息
         </button>
       </div>
 

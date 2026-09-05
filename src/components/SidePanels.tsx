@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ArchiveRestore,
   ArrowLeft,
   ArrowRight,
   Check,
@@ -188,13 +189,8 @@ interface SeatingPanelProps {
   onDeleteConstraintBatch: (batchId: string) => void;
   algorithms: GenerationStrategy[];
   hasMissingGender: boolean;
-  weights: {
-    score: number;
-    height: number;
-    appearance: number;
-  };
+  onOpenStudentInfo: () => void;
   onAlgorithmToggle: (algorithm: GenerationStrategy) => void;
-  onWeightChange: (key: "score" | "height" | "appearance", value: number) => void;
   onGenerate: () => void;
   simpleMode: boolean;
   hasGeneratedPlan: boolean;
@@ -221,9 +217,8 @@ export function SeatingPanel({
   onDeleteConstraintBatch,
   algorithms,
   hasMissingGender,
-  weights,
+  onOpenStudentInfo,
   onAlgorithmToggle,
-  onWeightChange,
   onGenerate,
   simpleMode,
   hasGeneratedPlan,
@@ -296,6 +291,7 @@ export function SeatingPanel({
             <button
               ref={ruleTabRef}
               id="seating-tab-rules"
+              data-tour-target="rule-config"
               type="button"
               role="tab"
               aria-label={`规则，已保存 ${constraintBatches.length} 组`}
@@ -465,13 +461,22 @@ export function SeatingPanel({
               <div className="algorithm-option" key={option.id}>
                 <button
                   aria-pressed={selected}
+                  aria-label={unavailable ? `${option.name}：学生信息无性别，点击去补充` : undefined}
+                  aria-haspopup={unavailable ? "dialog" : undefined}
                   className={`algorithm-choice ${selected ? "is-selected" : ""} ${unavailable ? "is-unavailable" : ""} ${option.id === "tag_balanced" ? "has-inline-help" : ""}`}
-                  disabled={unavailable}
                   type="button"
-                  onClick={() => onAlgorithmToggle(option.id)}
+                  onClick={() => unavailable ? onOpenStudentInfo() : onAlgorithmToggle(option.id)}
                 >
                   <span className="algorithm-check">{selected && <Check size={10} strokeWidth={2.5} />}</span>
-                  <span><strong>{option.name}</strong><small>{unavailable ? "学生信息无性别，请用模板重新补充学生信息" : option.note}</small></span>
+                  <span>
+                    <strong>{option.name}</strong>
+                    {unavailable ? (
+                      <small className="algorithm-missing-info">
+                        <span className="algorithm-missing-message">学生信息无性别，请先补充学生信息</span>
+                        <span className="algorithm-missing-action">去补充学生信息 <ArrowRight size={12} /></span>
+                      </small>
+                    ) : <small>{option.note}</small>}
+                  </span>
                 </button>
                 {option.id === "tag_balanced" && (
                   <button
@@ -482,7 +487,7 @@ export function SeatingPanel({
                     <CircleHelp size={16} strokeWidth={2} aria-hidden="true" />
                     <StyledTooltip
                       label="标签策略如何工作"
-                      description="只读取系统标签：“视力关注”优先靠前；“组长候选”和语文、数学、英语、物理、化学、生物优势尽量均匀分到各大组。可在名单中编辑学生、右键学生，或导入同名标签进行设置。手动输入的自定义标签仅用于记录和检索，不参与排座。"
+                      description="只读取系统标签：“视力关注”优先靠前；“组长候选”和“学科优势”尽量均匀分到各大组。可在名单中编辑学生、右键学生，或导入同名标签进行设置。手动输入的自定义标签仅用于记录和检索，不参与排座。"
                       side="bottom"
                     />
                   </button>
@@ -491,19 +496,6 @@ export function SeatingPanel({
             );
           })}
         </div>
-        <section className="panel-section weight-section">
-        <div className="section-title-row"><h3>数据权重</h3><small>自动平衡</small></div>
-        <label><span>成绩</span><input type="range" min="0" max="100" value={weights.score} onChange={(event) => onWeightChange("score", Number(event.target.value))} /><output>{weights.score}%</output></label>
-        <label><span>身高</span><input type="range" min="0" max="100" value={weights.height} onChange={(event) => onWeightChange("height", Number(event.target.value))} /><output>{weights.height}%</output></label>
-        <label><span>颜值</span><input type="range" min="0" max="100" value={weights.appearance} onChange={(event) => onWeightChange("appearance", Number(event.target.value))} /><output>{weights.appearance}%</output></label>
-        </section>
-        <div className="coverage-card">
-        <strong>可用数据覆盖率</strong>
-        <div><span style={{ width: "91%" }} /></div>
-        <small>缺失值将使用班级中位数</small>
-        </div>
-        <button className="ai-entry" type="button" disabled><Sparkles size={17} /><span><strong>AI 自然语言排座</strong><small>计划于 v1.1 提供</small></span></button>
-        <p className="ai-review-note">AI 座位方案仅供参考，最终座位由老师人工确认。</p>
       </section>
       )}
       </div>
@@ -524,7 +516,7 @@ export function SeatingPanel({
   );
 }
 
-type ExportFormat = "xlsx" | "png" | "pdf";
+type ExportFormat = "xlsx" | "png" | "pdf" | "zj";
 
 interface ExportPanelProps {
   format: ExportFormat;
@@ -542,14 +534,16 @@ interface ExportPanelProps {
   onFileNameChange: (value: string) => void;
   onThemeChange: (value: "paper" | "ink") => void;
   onVariantChange: (variant: ExportVariant) => void;
-  onExport: () => void;
+  onExport: () => void | Promise<void>;
+  onImportClassFile: (file: File) => Promise<void>;
   onBack?: () => void;
 }
 
-const formats: { id: ExportFormat; label: string; icon: typeof FileText }[] = [
+const formats: { id: ExportFormat; label: string; note?: string; icon: typeof FileText }[] = [
   { id: "xlsx", label: "Excel", icon: FileSpreadsheet },
   { id: "png", label: "PNG", icon: FileImage },
   { id: "pdf", label: "PDF", icon: FileText },
+  { id: "zj", label: "班级文件", note: "迁移使用", icon: ArchiveRestore },
 ];
 
 export function ExportPanel({
@@ -569,29 +563,62 @@ export function ExportPanel({
   onThemeChange,
   onVariantChange,
   onExport,
+  onImportClassFile,
   onBack,
 }: ExportPanelProps) {
-  const isVisualFormat = format !== "xlsx";
+  const [classFileAction, setClassFileAction] = useState<"export" | "import">();
+  const [classFileError, setClassFileError] = useState<string>();
+  const classFileInputRef = useRef<HTMLInputElement>(null);
+  const isClassFile = format === "zj";
+  const isVisualFormat = format === "png" || format === "pdf";
+  const panelNote = isClassFile
+    ? "班级文件用于换电脑迁移，可导出或恢复全部数据。"
+    : isVisualFormat
+      ? "PDF 与 PNG 均提供普通版和精简版。"
+      : "Excel 使用表格式版式预览。";
 
   return (
-    <aside className="inspector-panel">
+    <aside className={`inspector-panel ${isClassFile ? "class-file-export-panel" : ""}`}>
       <PanelHeading
         eyebrow="打印与分享"
         title="导出座次"
-        note={isVisualFormat ? "PDF 与 PNG 均提供普通版和精简版。" : "Excel 使用表格式版式预览。"}
+        note={panelNote}
         toolbar={onBack ? <button className="text-button export-back-button" type="button" onClick={onBack}><ArrowLeft size={14} />返回排座</button> : undefined}
       />
       <section className="panel-section">
         <h3>文件格式</h3>
-        <div className="format-grid">
-          {formats.map(({ id, label, icon: Icon }) => (
-            <button className={format === id ? "is-selected" : ""} key={id} type="button" onClick={() => onFormatChange(id)}>
-              <Icon size={18} />{label}
+        <div className="format-grid" role="group" aria-label="文件格式">
+          {formats.map(({ id, label, note, icon: Icon }) => (
+            <button
+              aria-pressed={format === id}
+              className={`${format === id ? "is-selected" : ""} ${id === "zj" ? "is-class-file" : ""}`}
+              key={id}
+              type="button"
+              onClick={() => {
+                setClassFileError(undefined);
+                onFormatChange(id);
+              }}
+            >
+              <Icon size={18} />
+              {note ? <span><strong>{label}</strong><small>{note}</small></span> : label}
             </button>
           ))}
         </div>
       </section>
-      {isVisualFormat ? (
+      {isClassFile ? (
+        <section className="panel-section class-file-transfer-section">
+          <h3>班级数据迁移</h3>
+          <div className="class-file-migration-note">
+            <ArchiveRestore size={20} />
+            <span><strong>整个工作区一起迁移</strong><small>包含全部班级、座位版本、学生名单、规则、自定义模板和界面设置。</small></span>
+          </div>
+          <div className="class-file-security-note">
+            <ShieldCheck size={17} />
+            <span><strong>加密 .zj 文件</strong><small>新电脑导入后会校验文件，并直接恢复到备份时的状态。</small></span>
+          </div>
+          {classFileError && <p className="class-file-error" role="alert">{classFileError}</p>}
+        </section>
+      ) : isVisualFormat ? (
         <>
           <section className="panel-section">
             <h3>导出版式</h3>
@@ -632,10 +659,46 @@ export function ExportPanel({
           </section>
         </>
       )}
-      <label className="file-name-field"><span>文件名</span><input value={fileName} onChange={(event) => onFileNameChange(event.target.value)} /><small>{isVisualFormat ? `_${variant === "compact" ? "精简版" : "普通版"}` : ""}.{format}</small></label>
-      <div className="panel-footer">
-        <button className="primary-button full-width" type="button" onClick={onExport}>
-          <Download size={18} />{isVisualFormat ? `导出${variant === "compact" ? "精简版" : "普通版"}` : "导出 Excel"}
+      {!isClassFile && <label className="file-name-field"><span>文件名</span><input value={fileName} onChange={(event) => onFileNameChange(event.target.value)} /><small>{isVisualFormat ? `_${variant === "compact" ? "精简版" : "普通版"}` : ""}.{format}</small></label>}
+      <div className={`panel-footer ${isClassFile ? "class-file-actions" : ""}`}>
+        {isClassFile && (
+          <>
+            <button className="secondary-button full-width" type="button" disabled={Boolean(classFileAction)} onClick={() => classFileInputRef.current?.click()}>
+              <ArchiveRestore size={18} />{classFileAction === "import" ? "正在读取…" : "导入班级文件"}
+            </button>
+            <input
+              ref={classFileInputRef}
+              className="visually-hidden"
+              type="file"
+              accept=".zj,application/octet-stream"
+              aria-label="选择班阵 .zj 班级文件"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (!file) return;
+                setClassFileError(undefined);
+                setClassFileAction("import");
+                void onImportClassFile(file)
+                  .catch((error) => setClassFileError(error instanceof Error ? error.message : "班级文件导入失败"))
+                  .finally(() => setClassFileAction(undefined));
+              }}
+            />
+          </>
+        )}
+        <button className="primary-button full-width" type="button" disabled={Boolean(classFileAction)} onClick={() => {
+          if (!isClassFile) {
+            void onExport();
+            return;
+          }
+          setClassFileError(undefined);
+          setClassFileAction("export");
+          void Promise.resolve(onExport())
+            .catch((error) => setClassFileError(error instanceof Error ? error.message : "班级文件导出失败"))
+            .finally(() => setClassFileAction(undefined));
+        }}>
+          <Download size={18} />{isClassFile
+            ? classFileAction === "export" ? "正在导出…" : "导出班级文件"
+            : isVisualFormat ? `导出${variant === "compact" ? "精简版" : "普通版"}` : "导出 Excel"}
         </button>
       </div>
     </aside>

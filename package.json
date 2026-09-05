@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "license": "node scripts/banzhen-license.mjs",
+    "release:macos": "bash scripts/release-macos.sh",
+    "release:windows": "powershell -ExecutionPolicy Bypass -File scripts/release-windows.ps1",
     "test": "vitest",
     "test:run": "vitest run",
     "tauri": "tauri"

@@ -1,5 +1,6 @@
 import {
   ALargeSmall,
+  BadgeCheck,
   Check,
   ChevronDown,
   CircleHelp,
@@ -8,17 +9,18 @@ import {
   FlipHorizontal2,
   Layers3,
   Palette,
-  PawPrint,
   Plus,
   Redo2,
   Settings2,
   ShieldAlert,
   Trash2,
   Undo2,
+  UploadCloud,
   UsersRound,
 } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { AppTheme, UiFontSize } from "../types";
+import { licenseStateLabel, type LicenseStatus } from "../data/license";
 import { BrandIcon } from "./BrandIcon";
 
 interface TopBarProps {
@@ -29,6 +31,7 @@ interface TopBarProps {
   savedAt: string;
   saveStatus: "saved" | "saving" | "error";
   legalAcknowledged: boolean;
+  licenseStatus: LicenseStatus;
   theme: AppTheme;
   fontSize: UiFontSize;
   canUndo: boolean;
@@ -37,6 +40,7 @@ interface TopBarProps {
   onClassChange: (value: string) => void;
   onVersionChange: (value: string) => void;
   onCreateClass: () => void;
+  onImportClassFile: (file: File) => Promise<void>;
   onClearClass: () => void;
   onDeleteClass: () => void;
   onCreateVersion: () => void;
@@ -45,6 +49,7 @@ interface TopBarProps {
   onRedo: () => void;
   onTogglePrint: () => void;
   onOpenSettings: () => void;
+  onOpenLicense: () => void;
   onOpenOnboarding: () => void;
   onOpenLegal: () => void;
   onThemeChange: (theme: AppTheme) => void;
@@ -59,6 +64,7 @@ export function TopBar({
   savedAt,
   saveStatus,
   legalAcknowledged,
+  licenseStatus,
   theme,
   fontSize,
   canUndo,
@@ -67,6 +73,7 @@ export function TopBar({
   onClassChange,
   onVersionChange,
   onCreateClass,
+  onImportClassFile,
   onClearClass,
   onDeleteClass,
   onCreateVersion,
@@ -75,11 +82,13 @@ export function TopBar({
   onRedo,
   onTogglePrint,
   onOpenSettings,
+  onOpenLicense,
   onOpenOnboarding,
   onOpenLegal,
   onThemeChange,
   onFontSizeChange,
 }: TopBarProps) {
+  const classFileInputRef = useRef<HTMLInputElement>(null);
   const saveLabel = {
     saved: "本地已保存",
     saving: "正在保存",
@@ -106,9 +115,22 @@ export function TopBar({
           onChange={onClassChange}
           actions={[
             { label: "新建班级", icon: <Plus size={16} />, onSelect: onCreateClass },
+            { label: "导入班级", description: "从迁移用 .zj 文件恢复", icon: <UploadCloud size={16} />, onSelect: () => classFileInputRef.current?.click() },
             { label: "清空当前班级名单", icon: <Eraser size={16} />, tone: "danger", onSelect: onClearClass },
             { label: "删除当前班级", icon: <Trash2 size={16} />, tone: "danger", disabled: classes.length <= 1, disabledReason: "至少保留一个班级", onSelect: onDeleteClass },
           ]}
+        />
+        <input
+          ref={classFileInputRef}
+          className="visually-hidden"
+          type="file"
+          accept=".zj,application/octet-stream"
+          aria-label="导入班级 .zj 迁移文件"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) void onImportClassFile(file).catch(() => undefined);
+          }}
         />
         <WorkspacePicker
           className="plan-picker"
@@ -143,7 +165,7 @@ export function TopBar({
         <button className="icon-button" type="button" aria-label="打开新手导览" onClick={onOpenOnboarding}>
           <CircleHelp size={18} />
         </button>
-        <button className="icon-button" type="button" aria-label="偏好设置" onClick={onOpenSettings}>
+        <button className="icon-button" type="button" aria-label="设置" title="设置" onClick={onOpenSettings}>
           <Settings2 size={18} />
         </button>
       </div>
@@ -154,30 +176,19 @@ export function TopBar({
         <time>{savedAt}</time>
       </div>
 
-      <div className="font-size-switcher" role="group" aria-label="界面字体大小">
-        <ALargeSmall size={16} aria-hidden="true" />
-        {([
-          ["auto", "自动"],
-          ["standard", "标准"],
-          ["large", "大字"],
-        ] as const).map(([value, label]) => (
-          <button
-            className={fontSize === value ? "is-active" : ""}
-            type="button"
-            aria-pressed={fontSize === value}
-            key={value}
-            onClick={() => onFontSizeChange(value)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <button
+        className={`license-status-button is-${licenseStatus.state}`}
+        type="button"
+        aria-label={`授权状态：${licenseStateLabel(licenseStatus.state)}${licenseStatus.licenseId ? `，${licenseStatus.licenseId}` : ""}`}
+        title="查看正版授权信息"
+        onClick={onOpenLicense}
+      >
+        <BadgeCheck size={17} aria-hidden="true" />
+      </button>
 
-      <div className="theme-switcher" role="group" aria-label="界面主题">
-        <Palette size={15} aria-hidden="true" />
-        <button className={theme === "minimal" ? "is-active" : ""} type="button" onClick={() => onThemeChange("minimal")}>简约</button>
-        <button className={theme === "cute" ? "is-active" : ""} type="button" onClick={() => onThemeChange("cute")}><PawPrint size={13} />猫爪</button>
-      </div>
+      <FontSizePicker value={fontSize} onChange={onFontSizeChange} />
+
+      <ThemePicker value={theme} onChange={onThemeChange} />
 
       <button className="legal-notice-button" type="button" onClick={onOpenLegal}>
         <ShieldAlert size={17} />
@@ -188,8 +199,166 @@ export function TopBar({
   );
 }
 
+const themeOptions: Array<{ value: AppTheme; label: string }> = [
+  { value: "minimal", label: "简约主题" },
+  { value: "cute", label: "猫爪主题" },
+];
+
+const fontSizeOptions: Array<{ value: UiFontSize; label: string }> = [
+  { value: "auto", label: "自动字体" },
+  { value: "standard", label: "标准字体" },
+  { value: "large", label: "大字" },
+  { value: "xlarge", label: "超大字" },
+];
+
+function FontSizePicker({ value, onChange }: { value: UiFontSize; onChange: (fontSize: UiFontSize) => void }) {
+  return (
+    <ToolbarChoicePicker
+      className="font-size-picker"
+      label="字体大小"
+      value={value}
+      options={fontSizeOptions}
+      icon={<ALargeSmall size={17} aria-hidden="true" />}
+      onChange={onChange}
+    />
+  );
+}
+
+function ThemePicker({ value, onChange }: { value: AppTheme; onChange: (theme: AppTheme) => void }) {
+  return (
+    <ToolbarChoicePicker
+      className="theme-picker"
+      label="界面主题"
+      value={value}
+      options={themeOptions}
+      icon={<Palette size={17} aria-hidden="true" />}
+      renderPrefix={(option) => <span className={`theme-option-swatch is-${option.value}`} aria-hidden="true" />}
+      onChange={onChange}
+    />
+  );
+}
+
+function ToolbarChoicePicker<T extends string>({ className, label, value, options, icon, renderPrefix, onChange }: {
+  className: string;
+  label: string;
+  value: T;
+  options: Array<{ value: T; label: string }>;
+  icon: ReactNode;
+  renderPrefix?: (option: { value: T; label: string }) => ReactNode;
+  onChange: (value: T) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuId = useId();
+  const selected = options.find((option) => option.value === value) ?? options[0];
+
+  const focusOption = (index: number) => {
+    window.requestAnimationFrame(() => {
+      const options = rootRef.current?.querySelectorAll<HTMLButtonElement>("[role='menuitemradio']");
+      options?.[(index + options.length) % options.length]?.focus();
+    });
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const closeFromOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeFromEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      window.requestAnimationFrame(() => triggerRef.current?.focus());
+    };
+    window.addEventListener("pointerdown", closeFromOutside);
+    window.addEventListener("keydown", closeFromEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeFromOutside);
+      window.removeEventListener("keydown", closeFromEscape);
+    };
+  }, [open]);
+
+  const choose = (nextValue: T) => {
+    setOpen(false);
+    if (nextValue !== value) onChange(nextValue);
+    window.requestAnimationFrame(() => triggerRef.current?.focus());
+  };
+
+  return (
+    <div
+      className={`toolbar-choice-picker ${className} ${open ? "is-open" : ""}`}
+      ref={rootRef}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
+      <button
+        ref={triggerRef}
+        className="toolbar-choice-trigger"
+        type="button"
+        aria-label={`${label}：${selected.label}`}
+        title={`${label}：${selected.label}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={menuId}
+        onClick={() => {
+          const nextOpen = !open;
+          setOpen(nextOpen);
+          if (nextOpen) focusOption(options.findIndex((option) => option.value === value));
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+          event.preventDefault();
+          const selectedIndex = options.findIndex((option) => option.value === value);
+          setOpen(true);
+          focusOption(selectedIndex + (event.key === "ArrowDown" ? 1 : -1));
+        }}
+      >
+        {icon}
+      </button>
+      {open && (
+        <div
+          className={`toolbar-choice-menu ${renderPrefix ? "has-prefix" : ""}`}
+          id={menuId}
+          role="menu"
+          aria-label={`选择${label}`}
+          onKeyDown={(event) => {
+            if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='menuitemradio']")];
+            const currentIndex = options.indexOf(document.activeElement as HTMLButtonElement);
+            const nextIndex = event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? options.length - 1
+                : currentIndex + (event.key === "ArrowDown" ? 1 : -1);
+            options[(nextIndex + options.length) % options.length]?.focus();
+          }}
+        >
+          {options.map((option) => (
+            <button
+              className={option.value === value ? "is-current" : ""}
+              type="button"
+              role="menuitemradio"
+              aria-checked={option.value === value}
+              tabIndex={option.value === value ? 0 : -1}
+              key={option.value}
+              onClick={() => choose(option.value)}
+            >
+              {renderPrefix?.(option)}
+              <span>{option.label}</span>
+              <Check size={15} aria-hidden="true" />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface PickerAction {
   label: string;
+  description?: string;
   icon: ReactNode;
   tone?: "danger";
   disabled?: boolean;
@@ -277,7 +446,7 @@ function WorkspacePicker({ label, value, options, icon, actions, className, onCh
           <div className="workspace-picker-actions">
             {actions.map((action) => (
               <button
-                className={action.tone === "danger" ? "is-danger" : ""}
+                className={`${action.tone === "danger" ? "is-danger" : ""} ${action.description ? "has-description" : ""}`.trim()}
                 disabled={action.disabled}
                 aria-label={action.disabled && action.disabledReason ? `${action.label}，${action.disabledReason}` : action.label}
                 title={action.disabled ? action.disabledReason : undefined}
@@ -289,7 +458,11 @@ function WorkspacePicker({ label, value, options, icon, actions, className, onCh
                   action.onSelect();
                 }}
               >
-                {action.icon}<span>{action.label}</span>
+                {action.icon}
+                <span className="workspace-picker-action-copy">
+                  <strong>{action.label}</strong>
+                  {action.description && <small>{action.description}</small>}
+                </span>
               </button>
             ))}
           </div>

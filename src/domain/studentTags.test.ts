@@ -6,12 +6,7 @@ describe("student system tags", () => {
     expect(systemStudentTags).toEqual([
       "视力关注",
       "组长候选",
-      "语文优势",
-      "数学优势",
-      "英语优势",
-      "物理优势",
-      "化学优势",
-      "生物优势",
+      "学科优势",
     ]);
     expect(systemStudentTags.every(isSystemStudentTag)).toBe(true);
   });

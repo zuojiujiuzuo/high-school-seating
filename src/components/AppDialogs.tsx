@@ -1,18 +1,138 @@
-import { Check, Copy, Eraser, Layers3, ListChecks, ListRestart, LockKeyhole, School, SlidersHorizontal, Trash2, UserRoundPlus, UsersRound, X } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronDown, Copy, Eraser, Layers3, ListChecks, ListRestart, LockKeyhole, PencilLine, RotateCcw, School, Search, SlidersHorizontal, Trash2, UserRoundPlus, UsersRound, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import type { DataBackupSummary } from "../data/dataBackup";
 import { ruleLabels } from "../domain/rules";
-import { isSystemStudentTag, systemStudentTagGroups } from "../domain/studentTags";
-import type { LayoutConfig, SeatingCandidate, SeatingConstraint, Student } from "../types";
+import { SCORE_GRADES } from "../domain/scoreGrades";
+import { nextStudentTableSort, sortStudentsForTable, type StudentTableSort, type StudentTableSortKey } from "../domain/studentTableSort";
+import { isSystemStudentTag, systemStudentTagGroups, systemStudentTags } from "../domain/studentTags";
+import type { LayoutConfig, ScoreGrade, SeatingCandidate, SeatingConstraint, Student } from "../types";
 
 interface DialogFrameProps {
   eyebrow: string;
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  className?: string;
   onClose: () => void;
 }
 
-function DialogFrame({ eyebrow, title, children, footer, onClose }: DialogFrameProps) {
+interface DialogSelectOption<T extends string> {
+  value: T;
+  label: string;
+}
+
+export function DialogSelect<T extends string>({ id, label, value, options, className = "", placeholder = "请选择", invalid = false, onChange }: {
+  id: string;
+  label: string;
+  value: T;
+  options: readonly DialogSelectOption<T>[];
+  className?: string;
+  placeholder?: string;
+  invalid?: boolean;
+  onChange: (value: T) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const selectedIndex = options.findIndex((option) => option.value === value);
+  const activeIndex = selectedIndex >= 0 ? selectedIndex : 0;
+  const selectedOption = selectedIndex >= 0 ? options[selectedIndex] : undefined;
+  const listboxId = `${id}-options`;
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
+  }, [open]);
+
+  const focusOption = (index: number) => {
+    const normalizedIndex = (index + options.length) % options.length;
+    setOpen(true);
+    window.requestAnimationFrame(() => {
+      rootRef.current?.querySelectorAll<HTMLButtonElement>("[role='option']")[normalizedIndex]?.focus();
+    });
+  };
+
+  const choose = (option: DialogSelectOption<T>) => {
+    onChange(option.value);
+    setOpen(false);
+    window.requestAnimationFrame(() => triggerRef.current?.focus());
+  };
+
+  return (
+    <div ref={rootRef} className={`dialog-select ${className}${open ? " is-open" : ""}`.trim()}>
+      <button
+        ref={triggerRef}
+        id={id}
+        className="dialog-select-trigger"
+        type="button"
+        aria-label={label}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={listboxId}
+        aria-invalid={invalid || undefined}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            focusOption(event.key === "ArrowDown" ? activeIndex : activeIndex - 1);
+          } else if (event.key === "Escape" && open) {
+            event.preventDefault();
+            event.stopPropagation();
+            setOpen(false);
+          }
+        }}
+      >
+        <span className={selectedOption ? "" : "dialog-select-placeholder"}>{selectedOption?.label ?? placeholder}</span>
+        <ChevronDown size={16} aria-hidden="true" />
+      </button>
+      {open && (
+        <div id={listboxId} className="dialog-select-menu" role="listbox" aria-label={label}>
+          {options.map((option, index) => {
+            const selected = option.value === value;
+            return (
+              <button
+                className={selected ? "is-selected" : ""}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                tabIndex={index === activeIndex ? 0 : -1}
+                key={option.value}
+                onClick={() => choose(option)}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                    event.preventDefault();
+                    focusOption(index + (event.key === "ArrowDown" ? 1 : -1));
+                  } else if (event.key === "Home" || event.key === "End") {
+                    event.preventDefault();
+                    focusOption(event.key === "Home" ? 0 : options.length - 1);
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setOpen(false);
+                    triggerRef.current?.focus();
+                  } else if (event.key === "Tab") {
+                    setOpen(false);
+                  }
+                }}
+              >
+                <span className="dialog-select-check" aria-hidden="true">{selected && <Check size={15} strokeWidth={2.4} />}</span>
+                <span>{option.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const scoreGradeOptions = SCORE_GRADES.map((grade) => ({ value: grade, label: grade }));
+
+function DialogFrame({ eyebrow, title, children, footer, className = "", onClose }: DialogFrameProps) {
   const dialogRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
 
@@ -56,7 +176,7 @@ function DialogFrame({ eyebrow, title, children, footer, onClose }: DialogFrameP
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section ref={dialogRef} className="modal interaction-dialog" role="dialog" aria-modal="true" aria-labelledby="interaction-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+      <section ref={dialogRef} className={`modal interaction-dialog ${className}`} role="dialog" aria-modal="true" aria-labelledby="interaction-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
         <header className="modal-header">
           <div><span className="eyebrow">{eyebrow}</span><h2 id="interaction-dialog-title">{title}</h2></div>
           <button className="icon-button" type="button" onClick={onClose} aria-label={`关闭${title}`}><X size={19} /></button>
@@ -172,7 +292,18 @@ export function StudentEditorDialog({ student, defaultClassName, onClose, onSave
             {errors.className && <small className="field-error" id="student-className-error">{errors.className}</small>}
           </label>
           <label><span>学号<small className="field-label-note">（选填）</small></span><input name="studentNo" value={draft.studentNo ?? ""} onChange={(event) => setDraft((current) => ({ ...current, studentNo: event.target.value }))} /></label>
-          <label><span>成绩<small className="field-label-note">（选填）</small></span><input name="score" min="0" max="750" type="number" value={draft.score ?? ""} onChange={(event) => setDraft((current) => ({ ...current, score: event.target.value ? Number(event.target.value) : undefined }))} /></label>
+          <div className="editor-field">
+            <span>成绩等级<small className="field-label-note">（选填）</small></span>
+            <DialogSelect
+              id="student-score-grade"
+              label="成绩等级"
+              className="score-grade-select"
+              value={draft.score ?? ""}
+              options={scoreGradeOptions}
+              placeholder="请选择 A–D"
+              onChange={(score) => setDraft((current) => ({ ...current, score: score || undefined }))}
+            />
+          </div>
           <label><span>身高（cm）<small className="field-label-note">（选填）</small></span><input name="height" min="100" max="220" type="number" value={draft.height ?? ""} onChange={(event) => setDraft((current) => ({ ...current, height: event.target.value ? Number(event.target.value) : undefined }))} /></label>
           <fieldset className="student-tag-picker span-two">
             <legend>标签<small className="field-label-note">（选填，可多选）</small></legend>
@@ -220,7 +351,7 @@ export function StudentEditorDialog({ student, defaultClassName, onClose, onSave
                   <span>自定义</span>
                   <div>
                     {customTags.map((tag) => (
-                      <button className="is-selected" type="button" aria-label={`移除标签${tag}`} key={tag} onClick={() => toggleTag(tag)}>
+                      <button className="is-selected is-custom" type="button" aria-label={`移除标签${tag}`} key={tag} onClick={() => toggleTag(tag)}>
                         {tag}<X size={12} strokeWidth={2} />
                       </button>
                     ))}
@@ -236,30 +367,425 @@ export function StudentEditorDialog({ student, defaultClassName, onClose, onSave
   );
 }
 
+function StudentInfoInlineInput({ ariaLabel, placeholder, type = "text", inputMode, min, max, onCommit }: {
+  ariaLabel: string;
+  placeholder: string;
+  type?: "text" | "number";
+  inputMode?: "numeric";
+  min?: number;
+  max?: number;
+  onCommit: (value: string) => void;
+}) {
+  const [value, setValue] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const commit = () => {
+    const normalized = value.trim();
+    if (!normalized || !inputRef.current?.checkValidity()) return;
+    onCommit(normalized);
+  };
+
+  return (
+    <input
+      ref={inputRef}
+      className="student-info-inline-input"
+      type={type}
+      inputMode={inputMode}
+      min={min}
+      max={max}
+      value={value}
+      placeholder={placeholder}
+      aria-label={ariaLabel}
+      autoComplete="off"
+      onChange={(event) => setValue(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+    />
+  );
+}
+
+function StudentTagCombobox({ id, studentName, value, suggestions, onChange }: {
+  id: string;
+  studentName: string;
+  value: readonly string[];
+  suggestions: readonly string[];
+  onChange: (tags: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const selectedTags = uniqueStudentTags(value);
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const visibleSuggestions = suggestions.filter((tag) => !normalizedQuery || tag.toLocaleLowerCase().includes(normalizedQuery));
+  const listboxId = `${id}-options`;
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
+  }, [open]);
+
+  const updateTags = (nextTags: readonly string[]) => onChange(uniqueStudentTags(nextTags));
+  const toggleTag = (tag: string) => {
+    updateTags(selectedTags.includes(tag)
+      ? selectedTags.filter((item) => item !== tag)
+      : [...selectedTags, tag]);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+  const addTypedTags = () => {
+    const typedTags = parseStudentTags(query);
+    if (!typedTags.length) return;
+    updateTags([...selectedTags, ...typedTags]);
+    setQuery("");
+  };
+  const moveOptionFocus = (current: HTMLElement, direction: 1 | -1) => {
+    const optionButtons = [...(rootRef.current?.querySelectorAll<HTMLButtonElement>("[role='option']") ?? [])];
+    const currentIndex = optionButtons.indexOf(current as HTMLButtonElement);
+    optionButtons[(currentIndex + direction + optionButtons.length) % optionButtons.length]?.focus();
+  };
+
+  return (
+    <div
+      ref={rootRef}
+      className={`student-tag-combobox${open ? " is-open" : ""}${selectedTags.length ? " has-value" : ""}`}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && open) {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+          triggerRef.current?.focus();
+        } else if (event.key === "Tab") {
+          setOpen(false);
+        }
+      }}
+    >
+      <button
+        ref={triggerRef}
+        id={id}
+        className="student-tag-combobox-trigger"
+        type="button"
+        aria-label={`设置${studentName}的标签`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={open ? `${id}-popover` : undefined}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="student-tag-combobox-value">
+          {selectedTags.length ? <><span>{selectedTags[0]}</span>{selectedTags.length > 1 && <small>+{selectedTags.length - 1}</small>}</> : "选择或输入"}
+        </span>
+        <ChevronDown size={14} aria-hidden="true" />
+      </button>
+      {open && (
+        <div id={`${id}-popover`} className="student-tag-combobox-popover" role="dialog" aria-label={`设置${studentName}的标签`}>
+          <label className="student-tag-combobox-search">
+            <Search size={15} aria-hidden="true" />
+            <input
+              ref={inputRef}
+              role="combobox"
+              aria-label="搜索或输入新标签"
+              aria-autocomplete="list"
+              aria-controls={listboxId}
+              aria-expanded="true"
+              value={query}
+              placeholder="搜索或输入新标签"
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  addTypedTags();
+                } else if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  rootRef.current?.querySelector<HTMLButtonElement>("[role='option']")?.focus();
+                }
+              }}
+            />
+          </label>
+          <div id={listboxId} className="student-tag-combobox-options" role="listbox" aria-label="可选标签" aria-multiselectable="true">
+            {visibleSuggestions.map((tag) => {
+              const selected = selectedTags.includes(tag);
+              return (
+                <button
+                  className={selected ? "is-selected" : ""}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  key={tag}
+                  onClick={() => toggleTag(tag)}
+                  onKeyDown={(event) => {
+                    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                      event.preventDefault();
+                      moveOptionFocus(event.currentTarget, event.key === "ArrowDown" ? 1 : -1);
+                    }
+                  }}
+                >
+                  <span className="student-tag-combobox-check">{selected && <Check size={13} strokeWidth={2.5} />}</span>
+                  <span>{tag}</span>
+                  <small>{isSystemStudentTag(tag) ? "系统" : "已有"}</small>
+                </button>
+              );
+            })}
+            {!visibleSuggestions.length && <p>没有匹配的已有标签</p>}
+          </div>
+          <button className="student-tag-combobox-create" type="button" disabled={!parseStudentTags(query).length} onClick={addTypedTags}>
+            <span>＋</span>{query.trim() ? `添加“${query.trim()}”` : "输入后添加标签"}<kbd>Enter</kbd>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SortableStudentHeader({ label, sortKey, sort, onSort }: {
+  label: string;
+  sortKey: StudentTableSortKey;
+  sort: StudentTableSort | undefined;
+  onSort: (key: StudentTableSortKey) => void;
+}) {
+  const active = sort?.key === sortKey;
+  const direction = active ? sort.direction : undefined;
+  const nextAction = direction === "ascending"
+    ? `按${label}降序排列`
+    : direction === "descending"
+      ? "恢复默认顺序"
+      : `按${label}升序排列`;
+
+  return (
+    <th className="student-info-sort-cell" aria-sort={direction ?? "none"}>
+      <button
+        className={`student-info-sort-button${active ? " is-active" : ""}`}
+        type="button"
+        onClick={() => onSort(sortKey)}
+        aria-label={nextAction}
+        title={nextAction}
+      >
+        <span>{label}</span>
+        {direction === "ascending" ? <ArrowUp size={14} aria-hidden="true" />
+          : direction === "descending" ? <ArrowDown size={14} aria-hidden="true" />
+            : <ArrowUpDown size={14} aria-hidden="true" />}
+      </button>
+    </th>
+  );
+}
+
+export function StudentInfoManagerDialog({ students, onClose, onEdit, onBatchEdit, onInlineUpdate }: {
+  students: Student[];
+  onClose: () => void;
+  onEdit: (student: Student) => void;
+  onBatchEdit: (studentIds: string[]) => void;
+  onInlineUpdate: (studentId: string, patch: Partial<Pick<Student, "gender" | "className" | "studentNo" | "score" | "height" | "tags">>) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [sort, setSort] = useState<StudentTableSort>();
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  const missingGenderCount = students.filter((student) => student.gender === "未填写").length;
+  const tagSuggestions = useMemo(() => uniqueStudentTags([
+    ...systemStudentTags,
+    ...students.flatMap((student) => student.tags ?? []),
+  ]), [students]);
+  const filteredStudents = useMemo(() => {
+    const normalized = query.trim().toLocaleLowerCase();
+    const matches = students.filter((student) => {
+      if (!normalized) return true;
+      return student.name.toLocaleLowerCase().includes(normalized)
+        || student.studentNo?.toLocaleLowerCase().includes(normalized)
+        || student.className.toLocaleLowerCase().includes(normalized)
+        || student.tags?.some((tag) => tag.toLocaleLowerCase().includes(normalized));
+    });
+    return sortStudentsForTable(matches, sort);
+  }, [query, sort, students]);
+  const filteredIds = filteredStudents.map((student) => student.id);
+  const selectedFilteredCount = filteredIds.filter((id) => selectedIds.includes(id)).length;
+  const allFilteredSelected = filteredIds.length > 0 && selectedFilteredCount === filteredIds.length;
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = selectedFilteredCount > 0 && !allFilteredSelected;
+    }
+  }, [allFilteredSelected, selectedFilteredCount]);
+
+  const toggleStudent = (studentId: string, checked: boolean) => {
+    setSelectedIds((current) => checked
+      ? current.includes(studentId) ? current : [...current, studentId]
+      : current.filter((id) => id !== studentId));
+  };
+
+  const toggleAllFiltered = (checked: boolean) => {
+    const filteredSet = new Set(filteredIds);
+    setSelectedIds((current) => checked
+      ? [...new Set([...current, ...filteredIds])]
+      : current.filter((id) => !filteredSet.has(id)));
+  };
+
+  const toggleSort = (key: StudentTableSortKey) => {
+    setSort((current) => nextStudentTableSort(current, key));
+  };
+
+  return (
+    <DialogFrame
+      eyebrow="STUDENT DATA"
+      title="补充学生信息"
+      className="student-info-manager-dialog"
+      onClose={onClose}
+      footer={<button className="primary-button" type="button" onClick={onClose}><Check size={16} />完成</button>}
+    >
+      <div className="student-info-manager-summary">
+        <span><strong>{missingGenderCount}</strong> 人缺少性别</span>
+        <small>补全后即可启用“男女分坐”和“防早恋模式”。</small>
+      </div>
+      <div className="student-info-manager-toolbar">
+        <div className="student-info-manager-all-count" aria-label={`全部学生 ${students.length} 人`}>
+          <strong>全部学生</strong><span>{students.length}</span>
+        </div>
+        <label className="student-info-manager-search">
+          <Search size={16} aria-hidden="true" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索姓名、学号、班级或标签" />
+        </label>
+        <button className="secondary-button student-info-batch-button" type="button" disabled={!selectedIds.length} onClick={() => onBatchEdit(selectedIds)}>
+          <PencilLine size={16} />批量修改{selectedIds.length ? ` (${selectedIds.length})` : ""}
+        </button>
+      </div>
+      <div className="student-info-manager-table-wrap">
+        <table className="student-table student-info-manager-table">
+          <thead>
+            <tr>
+              <th><input ref={selectAllRef} type="checkbox" checked={allFilteredSelected} disabled={!filteredIds.length} onChange={(event) => toggleAllFiltered(event.target.checked)} aria-label="选择当前筛选的全部学生" /></th>
+              <SortableStudentHeader label="姓名" sortKey="name" sort={sort} onSort={toggleSort} />
+              <SortableStudentHeader label="性别" sortKey="gender" sort={sort} onSort={toggleSort} />
+              <SortableStudentHeader label="班级" sortKey="className" sort={sort} onSort={toggleSort} />
+              <SortableStudentHeader label="学号" sortKey="studentNo" sort={sort} onSort={toggleSort} />
+              <SortableStudentHeader label="成绩等级" sortKey="score" sort={sort} onSort={toggleSort} />
+              <SortableStudentHeader label="身高" sortKey="height" sort={sort} onSort={toggleSort} />
+              <SortableStudentHeader label="标签" sortKey="tags" sort={sort} onSort={toggleSort} />
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredStudents.map((student) => {
+              const selected = selectedIds.includes(student.id);
+              return (
+                <tr className={selected ? "is-selected" : ""} key={student.id}>
+                  <td><input type="checkbox" checked={selected} onChange={(event) => toggleStudent(student.id, event.target.checked)} aria-label={`选择${student.name}`} /></td>
+                  <td><strong>{student.name}</strong></td>
+                  <td>
+                    {student.gender === "未填写" ? (
+                      <DialogSelect
+                        id={`student-gender-${student.id}`}
+                        label={`补充${student.name}的性别`}
+                        className="student-info-inline-select"
+                        value={student.gender}
+                        options={[{ value: "未填写", label: "请选择" }, { value: "男", label: "男" }, { value: "女", label: "女" }]}
+                        onChange={(gender) => {
+                          if (gender !== "未填写") onInlineUpdate(student.id, { gender });
+                        }}
+                      />
+                    ) : <span className={`gender-label gender-${student.gender}`}>{student.gender}</span>}
+                  </td>
+                  <td>
+                    {student.className.trim() ? student.className : (
+                      <StudentInfoInlineInput ariaLabel={`补充${student.name}的班级`} placeholder="填写班级" onCommit={(className) => onInlineUpdate(student.id, { className })} />
+                    )}
+                  </td>
+                  <td className="mono-data">
+                    {student.studentNo?.trim() ? student.studentNo : (
+                      <StudentInfoInlineInput ariaLabel={`补充${student.name}的学号`} placeholder="填写学号" inputMode="numeric" onCommit={(studentNo) => onInlineUpdate(student.id, { studentNo })} />
+                    )}
+                  </td>
+                  <td>
+                    <DialogSelect
+                      id={`student-score-${student.id}`}
+                      label={`设置${student.name}的成绩等级`}
+                      className={`student-info-inline-select student-score-grade-select score-grade-select${student.score ? " is-complete" : ""}`}
+                      value={student.score ?? ""}
+                      options={scoreGradeOptions}
+                      placeholder="请选择"
+                      onChange={(score) => {
+                        if (score) onInlineUpdate(student.id, { score });
+                      }}
+                    />
+                  </td>
+                  <td>
+                    {student.height != null ? `${student.height} cm` : (
+                      <StudentInfoInlineInput ariaLabel={`补充${student.name}的身高`} placeholder="填写身高" type="number" min={100} max={220} onCommit={(height) => onInlineUpdate(student.id, { height: Number(height) })} />
+                    )}
+                  </td>
+                  <td>
+                    <StudentTagCombobox
+                      id={`student-tags-${student.id}`}
+                      studentName={student.name}
+                      value={student.tags ?? []}
+                      suggestions={tagSuggestions}
+                      onChange={(tags) => onInlineUpdate(student.id, { tags })}
+                    />
+                  </td>
+                  <td><button className="student-info-edit-button" type="button" onClick={() => onEdit(student)}><PencilLine size={14} />修改</button></td>
+                </tr>
+              );
+            })}
+            {!filteredStudents.length && (
+              <tr><td className="student-info-manager-empty" colSpan={9}>没有找到匹配的学生</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </DialogFrame>
+  );
+}
+
 export interface StudentBulkPatch {
+  gender?: Student["gender"];
   tag?: string;
   clearTags?: boolean;
-  score?: number;
+  score?: ScoreGrade;
   height?: number;
 }
 
 export function StudentBatchDialog({ count, onClose, onSave }: { count: number; onClose: () => void; onSave: (patch: StudentBulkPatch) => void }) {
+  const [gender, setGender] = useState("");
   const [tag, setTag] = useState("");
   const [clearTags, setClearTags] = useState(false);
-  const [score, setScore] = useState("");
+  const [score, setScore] = useState<ScoreGrade | "">("");
   const [height, setHeight] = useState("");
   return (
     <DialogFrame
       eyebrow="BATCH EDIT"
       title={`批量编辑 ${count} 名学生`}
       onClose={onClose}
-      footer={<><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="primary-button" type="button" onClick={() => onSave({ tag: tag.trim() || undefined, clearTags, score: score ? Number(score) : undefined, height: height ? Number(height) : undefined })}>应用修改</button></>}
+      footer={<><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="primary-button" type="button" onClick={() => onSave({ gender: gender ? gender as Student["gender"] : undefined, tag: tag.trim() || undefined, clearTags, score: score || undefined, height: height ? Number(height) : undefined })}>应用修改</button></>}
     >
       <div className="dialog-intro"><UsersRound size={20} /><span>留空的字段不会覆盖原值。修改会作为一次操作加入撤销历史。</span></div>
-      <div className="editor-grid">
-        <label className="span-two"><span>统一标签</span><input disabled={clearTags} value={tag} onChange={(event) => setTag(event.target.value)} placeholder="例如：靠前安排" /></label>
-        <label><span>统一成绩</span><input type="number" min="0" max="750" value={score} onChange={(event) => setScore(event.target.value)} /></label>
+      <div className="editor-grid student-batch-grid">
+        <div className="editor-field">
+          <span>统一性别</span>
+          <DialogSelect
+            id="student-batch-gender"
+            label="统一性别"
+            value={gender}
+            options={[{ value: "", label: "不修改" }, { value: "男", label: "男" }, { value: "女", label: "女" }]}
+            onChange={setGender}
+          />
+        </div>
+        <div className="editor-field">
+          <span>统一成绩等级</span>
+          <DialogSelect
+            id="student-batch-score-grade"
+            label="统一成绩等级"
+            className="score-grade-select"
+            value={score}
+            options={[{ value: "", label: "不修改" }, ...scoreGradeOptions]}
+            onChange={setScore}
+          />
+        </div>
         <label><span>统一身高</span><input type="number" min="100" max="220" value={height} onChange={(event) => setHeight(event.target.value)} /></label>
+        <label><span>统一标签</span><input disabled={clearTags} value={tag} onChange={(event) => setTag(event.target.value)} placeholder="例如：靠前安排" /></label>
         <label className="check-field span-two"><input type="checkbox" checked={clearTags} onChange={(event) => setClearTags(event.target.checked)} /><span>清除已选学生的所有标签</span></label>
       </div>
     </DialogFrame>
@@ -516,6 +1042,39 @@ export function DeleteWorkspaceDialog({ kind, name, versionCount = 0, onClose, o
             : "该版本的规则和座位安排会从本机删除，其他版本不受影响。"} 此操作无法撤销。</p>
         </div>
       </div>
+    </DialogFrame>
+  );
+}
+
+export function RestoreDataDialog({ fileName, exportedAt, summary, restoring, onClose, onConfirm }: {
+  fileName: string;
+  exportedAt: string;
+  summary: DataBackupSummary;
+  restoring: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const exportedDate = new Date(exportedAt);
+  const dateLabel = Number.isNaN(exportedDate.getTime())
+    ? "未知时间"
+    : exportedDate.toLocaleString("zh-CN", { dateStyle: "medium", timeStyle: "short" });
+  return (
+    <DialogFrame
+      eyebrow="RESTORE DATA"
+      title="恢复班阵数据"
+      className="restore-data-dialog"
+      onClose={restoring ? () => undefined : onClose}
+      footer={<><button className="secondary-button" type="button" disabled={restoring} onClick={onClose}>取消</button><button className="danger-button" type="button" disabled={restoring} onClick={onConfirm}><RotateCcw size={16} />{restoring ? "正在恢复…" : "确认恢复"}</button></>}
+    >
+      <div className="restore-data-warning">
+        <span aria-hidden="true"><LockKeyhole size={23} /></span>
+        <div><strong>将用备份覆盖本机现有数据</strong><p>恢复完成后会自动刷新，班级、座位版本、规则、模板和界面设置都会回到备份时的状态。</p></div>
+      </div>
+      <dl className="restore-data-summary">
+        <div><dt>备份文件</dt><dd title={fileName}>{fileName}</dd></div>
+        <div><dt>导出时间</dt><dd>{dateLabel}</dd></div>
+        <div><dt>数据范围</dt><dd>{summary.classCount} 个班级 · {summary.versionCount} 个座位版本 · {summary.studentRecordCount} 条学生记录</dd></div>
+      </dl>
     </DialogFrame>
   );
 }

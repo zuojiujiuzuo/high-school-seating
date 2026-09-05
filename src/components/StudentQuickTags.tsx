@@ -6,10 +6,10 @@ const QUICK_TAGS = ["视力关注", "组长候选", "重点关注", "需要鼓�
 interface StudentQuickTagsProps {
   studentName: string;
   tags?: string[];
-  onAddTag: (tag: string) => void;
+  onToggleTag: (tag: string) => void;
 }
 
-export function StudentQuickTags({ studentName, tags = [], onAddTag }: StudentQuickTagsProps) {
+export function StudentQuickTags({ studentName, tags = [], onToggleTag }: StudentQuickTagsProps) {
   const [customTag, setCustomTag] = useState("");
   const normalizedTags = new Set(tags.map((tag) => tag.trim()).filter(Boolean));
 
@@ -17,15 +17,15 @@ export function StudentQuickTags({ studentName, tags = [], onAddTag }: StudentQu
     event.preventDefault();
     const tag = customTag.trim();
     if (!tag || normalizedTags.has(tag)) return;
-    onAddTag(tag);
+    onToggleTag(tag);
     setCustomTag("");
   };
 
   return (
-    <section className="student-context-tag-section" aria-label={`为${studentName}快速添加标签`}>
+    <section className="student-context-tag-section" aria-label={`为${studentName}快速设置标签`}>
       <div className="student-context-tag-heading">
         <Tags size={15} />
-        <strong>快速添加标签</strong>
+        <strong>快速设置标签</strong>
         <small>{tags.length ? `已有 ${tags.length} 个` : "可多选"}</small>
       </div>
       <div className="student-context-tag-options">
@@ -35,11 +35,11 @@ export function StudentQuickTags({ studentName, tags = [], onAddTag }: StudentQu
             <button
               className={added ? "is-added" : ""}
               type="button"
-              role="menuitem"
-              aria-label={added ? `${tag}，已添加` : `添加标签${tag}`}
-              disabled={added}
+              role="menuitemcheckbox"
+              aria-checked={added}
+              aria-label={added ? `取消标签${tag}` : `添加标签${tag}`}
               key={tag}
-              onClick={() => onAddTag(tag)}
+              onClick={() => onToggleTag(tag)}
             >
               {added && <Check size={11} />}
               {tag}

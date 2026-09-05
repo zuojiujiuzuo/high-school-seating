@@ -1,4 +1,5 @@
 export type Gender = "男" | "女" | "未填写";
+export type ScoreGrade = "A" | "B" | "C" | "D";
 
 export interface Student {
   id: string;
@@ -7,7 +8,7 @@ export interface Student {
   className: string;
   isClassRepresentative?: boolean;
   studentNo?: string;
-  score?: number;
+  score?: ScoreGrade;
   height?: number;
   appearance?: number;
   notes?: string;
@@ -80,7 +81,7 @@ export type GuardianSide = "left" | "right";
 
 export type AppTheme = "minimal" | "cute";
 
-export type UiFontSize = "auto" | "standard" | "large";
+export type UiFontSize = "auto" | "standard" | "large" | "xlarge";
 
 export type ExportVariant = "standard" | "compact";
 

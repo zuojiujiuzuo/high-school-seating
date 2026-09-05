@@ -158,7 +158,7 @@ export function StudentRosterBoard({
         <div><strong>{students.length}</strong><span>学生总数</span></div>
         <div><strong>{requiredCompleteness}%</strong><span>必填完整度</span></div>
         <div><strong>{heightCovered}/{students.length}</strong><span>身高覆盖</span></div>
-        <div><strong>{scoreCovered}/{students.length}</strong><span>成绩覆盖</span></div>
+        <div><strong>{scoreCovered}/{students.length}</strong><span>成绩等级覆盖</span></div>
         <span className="summary-ok">
           <Check size={16} />
           {requiredCompleteCount === students.length ? "数据可以用于排座" : "请先补全必填信息"}
@@ -210,7 +210,7 @@ export function StudentRosterBoard({
               <th>姓名</th>
               <th>性别</th>
               <th>学号</th>
-              <th>成绩</th>
+              <th>成绩等级</th>
               <th>身高</th>
               <th>标签</th>
               <th aria-label="更多操作" />

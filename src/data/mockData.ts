@@ -18,7 +18,7 @@ export const students: Student[] = names.map((name, index) => ({
   gender: index % 2 === 0 ? "男" : "女",
   className: EXAMPLE_CLASS_NAME,
   studentNo: `2026${String(index + 1).padStart(3, "0")}`,
-  score: index % 12 === 11 ? undefined : [112, 126, 98, 135, 121, 105, 142, 117][index % 8],
+  score: index % 12 === 11 ? undefined : (["B", "A", "C", "A", "B", "C", "A", "D"] as const)[index % 8],
   height: index % 8 === 7 ? undefined : [168, 160, 174, 158, 172, 162, 178, 165][index % 8],
   appearance: (index % 10) + 1,
   tags: index % 7 === 0 ? ["组长候选"] : index % 6 === 0 ? ["视力关注"] : [],

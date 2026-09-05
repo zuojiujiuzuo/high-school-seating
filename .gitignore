@@ -1,6 +1,11 @@
 node_modules/
 .vite/
 src-tauri/target/
+src-tauri/gen/
 *.log
 *.tsbuildinfo
 .DS_Store
+*.zj-license
+*.license-private.pem
+.license-issuer/
+src-tauri/tauri.windows.release.conf.json

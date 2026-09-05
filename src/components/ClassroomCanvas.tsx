@@ -28,6 +28,9 @@ import { toolDetails, type ToolMode } from "./ToolRail";
 
 const LOGICAL_WIDTH = 1120;
 const LOGICAL_HEIGHT = 720;
+const STANDARD_SEAT_WIDTH = 110;
+const MAX_GRID_GROUP_WIDTH = STANDARD_SEAT_WIDTH * 2 + 14;
+const LAYOUT_HORIZONTAL_GUTTER = 20;
 const TOOL_HINT_DURATION_MS = 10_000;
 const COLORS = {
   ink: 0x242521,
@@ -70,6 +73,24 @@ interface DragState {
   moved: boolean;
 }
 
+interface GroupDragMember {
+  studentId: string;
+  seatId: string;
+  node: Container;
+  startPosition: Point;
+  width: number;
+  height: number;
+}
+
+interface GroupDragState {
+  members: GroupDragMember[];
+  startPointer: Point;
+  offset: Point;
+  bounds: Rectangle;
+  frame: Graphics;
+  moved: boolean;
+}
+
 interface LassoState {
   start: Point;
   current: Point;
@@ -104,12 +125,13 @@ interface PodiumDragState {
   moved: boolean;
 }
 
-interface RuleTooltipState {
+interface StatusTooltipState {
   x: number;
   y: number;
-  studentName: string;
+  title: string;
   items: string[];
-  total: number;
+  hiddenCount: number;
+  itemDisplay: "text" | "tag";
 }
 
 interface StudentContextMenuState {
@@ -137,6 +159,7 @@ interface ClassroomCanvasProps {
   podiumPosition: CanvasPoint;
   onSelectionChange: (studentIds: string[]) => void;
   onSwap: (fromSeatId: string, toSeatId: string) => void;
+  onMoveStudentGroup: (sourceSeatIds: string[], targetSeatIds: string[]) => void;
   onSeatStudent: (studentId: string, seatId: string) => void;
   onAddSeat: (position: CanvasPoint) => void;
   onMoveSeat: (seatId: string, position: CanvasPoint) => void;
@@ -236,6 +259,7 @@ export function ClassroomCanvas({
   podiumPosition,
   onSelectionChange,
   onSwap,
+  onMoveStudentGroup,
   onSeatStudent,
   onAddSeat,
   onMoveSeat,
@@ -255,6 +279,7 @@ export function ClassroomCanvas({
   const seatPositionsRef = useRef<Map<string, SeatPosition>>(new Map());
   const tokenNodesRef = useRef<Map<string, Container>>(new Map());
   const dragRef = useRef<DragState | null>(null);
+  const groupDragRef = useRef<GroupDragState | null>(null);
   const lassoRef = useRef<LassoState | null>(null);
   const seatDragRef = useRef<SeatDragState | null>(null);
   const aisleDragRef = useRef<AisleDragState | null>(null);
@@ -266,6 +291,7 @@ export function ClassroomCanvas({
   const panRef = useRef<{ start: Point; origin: Point } | null>(null);
   const redrawRef = useRef<() => void>(() => undefined);
   const finishDragRef = useRef<(event: FederatedPointerEvent) => void>(() => undefined);
+  const finishGroupDragRef = useRef<() => void>(() => undefined);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const latestRef = useRef({
     aisleWidth,
@@ -284,7 +310,7 @@ export function ClassroomCanvas({
     tool,
   });
   const [zoom, setZoom] = useState(100);
-  const [ruleTooltip, setRuleTooltip] = useState<RuleTooltipState>();
+  const [statusTooltip, setStatusTooltip] = useState<StatusTooltipState>();
   const [studentContextMenu, setStudentContextMenu] = useState<StudentContextMenuState>();
   const [toolHintVisible, setToolHintVisible] = useState(false);
   const [toolHintCountdown, setToolHintCountdown] = useState(10);
@@ -335,7 +361,7 @@ export function ClassroomCanvas({
   ) => {
     const app = appRef.current;
     if (!app) return;
-    setRuleTooltip(undefined);
+    setStatusTooltip(undefined);
     setStudentContextMenu({
       studentId,
       studentName,
@@ -487,6 +513,103 @@ export function ClassroomCanvas({
 
   finishDragRef.current = finishDrag;
 
+  const finishGroupDrag = useCallback(() => {
+    const drag = groupDragRef.current;
+    if (!drag) return;
+    groupDragRef.current = null;
+
+    const restore = () => {
+      drag.frame.position.set(0, 0);
+      drag.frame.zIndex = 5;
+      drag.frame.cursor = "move";
+      drag.members.forEach((member, index) => {
+        animateNode(
+          member.node,
+          new Point(member.node.x, member.node.y),
+          member.startPosition,
+          0,
+          28,
+          index === drag.members.length - 1 ? redrawRef.current : undefined,
+        );
+      });
+    };
+
+    if (!drag.moved) {
+      drag.frame.cursor = "move";
+      return;
+    }
+
+    const availableSeats = [...seatPositionsRef.current.values()].filter((position) => !position.seat.disabled);
+    const usedTargetSeatIds = new Set<string>();
+    const targets: SeatPosition[] = [];
+
+    for (const member of drag.members) {
+      const desiredCenterX = member.startPosition.x + drag.offset.x + member.width / 2;
+      const desiredCenterY = member.startPosition.y + drag.offset.y + member.height / 2;
+      let nearest: SeatPosition | undefined;
+      let nearestDistance = Number.POSITIVE_INFINITY;
+      availableSeats.forEach((position) => {
+        if (usedTargetSeatIds.has(position.seat.id)) return;
+        const distance = Math.hypot(
+          desiredCenterX - (position.x + position.width / 2),
+          desiredCenterY - (position.y + position.height / 2),
+        );
+        if (distance < nearestDistance) {
+          nearest = position;
+          nearestDistance = distance;
+        }
+      });
+      if (!nearest || nearestDistance > 88) {
+        onToolFeedback("目标区域没有足够座位，已保留原位置");
+        restore();
+        return;
+      }
+      targets.push(nearest);
+      usedTargetSeatIds.add(nearest.seat.id);
+    }
+
+    const sourceSeatIds = drag.members.map((member) => member.seatId);
+    const targetSeatIds = targets.map((position) => position.seat.id);
+    if (targetSeatIds.every((seatId, index) => seatId === sourceSeatIds[index])) {
+      restore();
+      return;
+    }
+
+    const sourceSet = new Set(sourceSeatIds);
+    const targetSet = new Set(targetSeatIds);
+    const sourceOnlyMembers = drag.members.filter((member) => !targetSet.has(member.seatId));
+    const targetOnlyPositions = targets.filter((position) => !sourceSet.has(position.seat.id));
+
+    drag.frame.eventMode = "none";
+    drag.frame.removeFromParent();
+    drag.frame.destroy();
+
+    targetOnlyPositions.forEach((position, index) => {
+      const displacedStudentId = assignments[position.seat.id];
+      const displacedNode = displacedStudentId ? tokenNodesRef.current.get(displacedStudentId) : undefined;
+      const destination = sourceOnlyMembers[index]?.startPosition;
+      if (displacedNode && destination) {
+        animateNode(displacedNode, new Point(displacedNode.x, displacedNode.y), destination, 0, 54);
+      }
+    });
+
+    drag.members.forEach((member, index) => {
+      const target = targets[index];
+      animateNode(
+        member.node,
+        new Point(member.node.x, member.node.y),
+        new Point(target.x, target.y),
+        0,
+        54,
+        index === drag.members.length - 1
+          ? () => onMoveStudentGroup(sourceSeatIds, targetSeatIds)
+          : undefined,
+      );
+    });
+  }, [animateNode, assignments, onMoveStudentGroup, onToolFeedback]);
+
+  finishGroupDragRef.current = finishGroupDrag;
+
   const drawScene = useCallback(() => {
     const app = appRef.current;
     const root = rootRef.current;
@@ -616,8 +739,11 @@ export function ClassroomCanvas({
     const columnCount = gridSeats.length ? Math.max(...gridSeats.map((seat) => seat.column)) + 1 : 2;
     const rowCount = gridSeats.length ? Math.max(...gridSeats.map((seat) => seat.row)) + 1 : 0;
     const groupWidth = groupCount
-      ? Math.min(210, (LOGICAL_WIDTH - 120 - Math.max(0, groupCount - 1) * aisleWidth) / groupCount)
-      : 210;
+      ? Math.min(
+        MAX_GRID_GROUP_WIDTH,
+        (LOGICAL_WIDTH - LAYOUT_HORIZONTAL_GUTTER - Math.max(0, groupCount - 1) * aisleWidth) / groupCount,
+      )
+      : MAX_GRID_GROUP_WIDTH;
     const layoutWidth = groupCount * groupWidth + Math.max(0, groupCount - 1) * aisleWidth;
     const layoutLeft = (LOGICAL_WIDTH - layoutWidth) / 2;
     const groupPlacements = Array.from({ length: groupCount }, (_, group) => ({
@@ -625,7 +751,7 @@ export function ClassroomCanvas({
       x: layoutLeft + group * (groupWidth + aisleWidth),
       width: groupWidth,
     }));
-    const guardianSeatWidth = 96;
+    const guardianSeatWidth = STANDARD_SEAT_WIDTH;
     const guardianPlacements = guardianSeats.map((seat) => ({
       group: seat.group,
       x: seat.guardian === "left"
@@ -698,7 +824,7 @@ export function ClassroomCanvas({
       }
 
       groupSeats.forEach((seat) => {
-        const seatWidth = seat.guardian || seat.canvasX !== undefined ? 96 : gridSeatWidth;
+        const seatWidth = seat.guardian || seat.canvasX !== undefined ? STANDARD_SEAT_WIDTH : gridSeatWidth;
         const seatHeight = seat.guardian || seat.canvasY !== undefined ? 54 : gridSeatHeight;
         const x = seat.guardian ? placement.x : seat.canvasX ?? placement.x + 6 + seat.column * (seatWidth + 2);
         const y = seat.guardian ? podiumPosition.y + 5 : seat.canvasY ?? groupTop + seat.row * (gridSeatHeight + rowGap);
@@ -838,82 +964,149 @@ export function ClassroomCanvas({
           .stroke({ width: selected ? 2 : 1.15, color: selected ? palette.blue : palette.ink });
         token.addChild(card);
 
-        if (student.isClassRepresentative) {
-          const representativeBadge = new Graphics();
-          representativeBadge.circle(11, 10, 9)
-            .fill({ color: theme === "cute" ? 0xe28a45 : 0xc98118 })
-            .stroke({ width: 2, color: 0xffffff });
-          const representativeText = makeLabel("课", 9, 0xffffff, "600");
-          representativeText.anchor.set(0.5);
-          representativeText.position.set(11, 9.5);
-          token.addChild(representativeBadge, representativeText);
-        }
-
         const ruleCount = studentRuleCounts.get(studentId) ?? 0;
-        if (ruleCount > 0) {
-          const ruleMarkerX = seatWidth < 78 ? 14 : 16;
-          const ruleMarker = new Container();
-          ruleMarker.position.set(ruleMarkerX, seatHeight / 2);
-          ruleMarker.eventMode = printMode ? "none" : "static";
-          ruleMarker.cursor = printMode ? "default" : "help";
-          ruleMarker.hitArea = new Rectangle(-11, -11, 22, 22);
-          const ruleMarkerBall = new Graphics();
-          ruleMarkerBall.circle(0, 0, 8.5).fill({ color: palette.blue }).stroke({ width: 2, color: palette.paper });
-          const ruleMarkerText = makeLabel("规", 10, 0xffffff, "600");
-          ruleMarkerText.anchor.set(0.5);
-          ruleMarkerText.position.set(0, -0.5);
-          ruleMarker.addChild(ruleMarkerBall, ruleMarkerText);
-          if (!printMode) {
-            const relatedRules = constraints.filter((constraint) => (
-              constraint.pair.a === studentId || constraint.pair.b === studentId
-            ));
-            const tooltipItems = relatedRules.slice(0, 3).map((constraint) => {
-              const peerId = constraint.pair.a === studentId ? constraint.pair.b : constraint.pair.a;
-              return `${ruleLabels[constraint.type]} · ${studentMap.get(peerId)?.name ?? "未知学生"}`;
+        const compactSeat = seatHeight < 42 || seatWidth < 78;
+        const statusKinds: Array<"representative" | "rule" | "tag"> = [];
+        if (student.isClassRepresentative) statusKinds.push("representative");
+        if (ruleCount > 0) statusKinds.push("rule");
+        if (student.tags?.length) statusKinds.push("tag");
+        const visibleStatusCount = Math.max(1, statusKinds.length);
+        const statusGap = compactSeat ? 1 : 2;
+        const maxStatusRadius = compactSeat ? 5.5 : 8;
+        const statusRadius = Math.min(
+          maxStatusRadius,
+          (seatHeight - 8 - statusGap * (visibleStatusCount - 1)) / (visibleStatusCount * 2),
+        );
+        const statusDiameter = statusRadius * 2;
+        const statusStackHeight = visibleStatusCount * statusDiameter + (visibleStatusCount - 1) * statusGap;
+        const statusStartY = (seatHeight - statusStackHeight) / 2 + statusRadius;
+        const statusX = compactSeat ? 8 : 12;
+        const statusY = (kind: "representative" | "rule" | "tag") => (
+          statusStartY + statusKinds.indexOf(kind) * (statusDiameter + statusGap)
+        );
+        const addStatusMarker = (kind: "representative" | "rule" | "tag", label: string, color: number) => {
+          const marker = new Container();
+          marker.position.set(statusX, statusY(kind));
+          const markerBall = new Graphics();
+          markerBall.circle(0, 0, statusRadius)
+            .fill({ color })
+            .stroke({ width: compactSeat ? 1 : 1.5, color: palette.paper });
+          const markerText = makeLabel(label, Math.max(6, Math.min(9, statusRadius + 1)), 0xffffff, "600");
+          markerText.anchor.set(0.5);
+          markerText.position.set(0, -0.5);
+          marker.addChild(markerBall, markerText);
+          token.addChild(marker);
+          return marker;
+        };
+        const attachStatusTooltip = (
+          marker: Container,
+          title: string,
+          items: string[],
+          hiddenCount = 0,
+          itemDisplay: StatusTooltipState["itemDisplay"] = "text",
+        ) => {
+          if (printMode) return;
+          marker.eventMode = "static";
+          marker.cursor = "help";
+          const hitHalfHeight = statusRadius + statusGap / 2;
+          marker.hitArea = new Rectangle(
+            -statusX,
+            -hitHalfHeight,
+            compactSeat ? 20 : 25,
+            hitHalfHeight * 2,
+          );
+          const updateTooltip = (event: FederatedPointerEvent) => {
+            const screenWidth = app.screen.width;
+            const screenHeight = app.screen.height;
+            setStatusTooltip({
+              x: clamp(event.global.x + 16, 12, Math.max(12, screenWidth - 224)),
+              y: clamp(event.global.y, 34, Math.max(34, screenHeight - 82)),
+              title,
+              items,
+              hiddenCount,
+              itemDisplay,
             });
-            const updateTooltip = (event: FederatedPointerEvent) => {
-              const screenWidth = app.screen.width;
-              const screenHeight = app.screen.height;
-              setRuleTooltip({
-                x: clamp(event.global.x + 16, 12, Math.max(12, screenWidth - 224)),
-                y: clamp(event.global.y, 34, Math.max(34, screenHeight - 82)),
-                studentName: student.name,
-                items: tooltipItems,
-                total: relatedRules.length,
-              });
-            };
-            ruleMarker.on("pointerover", updateTooltip);
-            ruleMarker.on("pointermove", updateTooltip);
-            ruleMarker.on("pointerout", () => setRuleTooltip(undefined));
-          }
-          token.addChild(ruleMarker);
-        } else {
-          const genderMark = new Graphics();
-          const genderColor = student.gender === "女" ? 0xc95f78 : student.gender === "男" ? 0x4e77a9 : 0x8b8c86;
-          genderMark.circle(12, seatHeight / 2, 4).stroke({ width: 1.2, color: genderColor });
-          token.addChild(genderMark);
+          };
+          marker.on("pointerover", updateTooltip);
+          marker.on("pointermove", updateTooltip);
+          marker.on("pointerout", () => setStatusTooltip(undefined));
+        };
+
+        const placeholderColor = student.gender === "女"
+          ? 0xc95f78
+          : student.gender === "男"
+            ? 0x4e77a9
+            : 0x8b8c86;
+        if (statusKinds.length === 0) {
+          const placeholder = new Graphics();
+          placeholder.circle(statusX, seatHeight / 2, compactSeat ? 2.2 : 3.5)
+            .stroke({ width: compactSeat ? 1 : 1.25, color: placeholderColor, alpha: 0.7 });
+          token.addChild(placeholder);
         }
 
-        const nameLabel = makeLabel(student.name, seatWidth < 78 ? 14 : 18, palette.ink, selected ? "600" : "500");
-        const nameOffset = ruleCount > 0 ? (seatWidth < 78 ? 11 : 13) : 5;
+        if (student.isClassRepresentative) {
+          const representativeMarker = addStatusMarker("representative", "课", theme === "cute" ? 0xe28a45 : 0xc98118);
+          attachStatusTooltip(representativeMarker, `${student.name} · 课代表`, ["已标记为课代表"]);
+        }
+
+        if (ruleCount > 0) {
+          const relatedRules = constraints.filter((constraint) => (
+            constraint.pair.a === studentId || constraint.pair.b === studentId
+          ));
+          const tooltipItems = relatedRules.slice(0, 3).map((constraint) => {
+            const peerId = constraint.pair.a === studentId ? constraint.pair.b : constraint.pair.a;
+            return `${ruleLabels[constraint.type]} · ${studentMap.get(peerId)?.name ?? "未知学生"}`;
+          });
+          const ruleMarker = addStatusMarker("rule", "规", palette.blue);
+          attachStatusTooltip(
+            ruleMarker,
+            `${student.name} · ${relatedRules.length} 条规则`,
+            tooltipItems,
+            Math.max(0, relatedRules.length - tooltipItems.length),
+          );
+        }
+
+        if (student.tags?.length) {
+          const tagItems = student.tags.slice(0, 3);
+          const tagMarker = addStatusMarker("tag", "标", palette.green);
+          attachStatusTooltip(
+            tagMarker,
+            `${student.name} · ${student.tags.length} 个标签`,
+            tagItems,
+            Math.max(0, student.tags.length - tagItems.length),
+            "tag",
+          );
+        }
+
+        const contentLeft = compactSeat ? 20 : 25;
+        const contentRight = seatWidth - (compactSeat ? 7 : 9);
+        const contentWidth = Math.max(30, contentRight - contentLeft);
+        const contentCenterX = contentLeft + contentWidth / 2;
+        const nameColor = student.gender === "男"
+          ? 0x4e77a9
+          : student.gender === "女"
+            ? 0xd15f7a
+            : palette.ink;
+        const nameLabel = makeLabel(student.name, compactSeat ? 13 : 18, nameColor, selected ? "600" : "500");
+        const nameNaturalWidth = nameLabel.width;
+        const nameScale = nameNaturalWidth > contentWidth ? contentWidth / nameNaturalWidth : 1;
+        const nameY = seatHeight / 2 - (compactSeat ? 5 : 7);
         nameLabel.anchor.set(0.5);
-        nameLabel.position.set(seatWidth / 2 + nameOffset, seatHeight / 2);
+        nameLabel.scale.set(nameScale);
+        nameLabel.position.set(contentCenterX, nameY);
         token.addChild(nameLabel);
 
-        if (student.tags?.includes("组长候选")) {
-          const status = new Graphics();
-          status.circle(seatWidth - 9, seatHeight - 9, 6).fill({ color: palette.green });
-          status.moveTo(seatWidth - 12, seatHeight - 9).lineTo(seatWidth - 10, seatHeight - 6).lineTo(seatWidth - 6, seatHeight - 12)
-            .stroke({ width: 1.3, color: 0xffffff });
-          token.addChild(status);
-        } else if (student.tags?.includes("视力关注")) {
-          const warning = new Graphics();
-          warning.circle(seatWidth - 9, seatHeight - 9, 6).fill({ color: palette.coral });
-          const warningText = makeLabel("!", 9, 0xffffff, "600");
-          warningText.anchor.set(0.5);
-          warningText.position.set(seatWidth - 9, seatHeight - 9.5);
-          token.addChild(warningText);
-        }
+        const studentNoLabel = makeLabel(
+          student.studentNo || "未填写",
+          compactSeat ? 8 : 10,
+          palette.ink,
+          "500",
+        );
+        studentNoLabel.anchor.set(0.5);
+        studentNoLabel.alpha = student.studentNo ? 0.58 : 0.42;
+        if (studentNoLabel.width > contentWidth) studentNoLabel.scale.set(contentWidth / studentNoLabel.width);
+        studentNoLabel.position.set(contentCenterX, seatHeight / 2 + (compactSeat ? 7 : 11));
+        token.addChild(studentNoLabel);
 
         if (selected) {
           const badge = new Graphics();
@@ -1024,6 +1217,38 @@ export function ClassroomCanvas({
       const selectionFrame = new Graphics();
       drawDashedRect(selectionFrame, minX, minY, maxX - minX, maxY - minY, palette.blue, 0.9);
       selectionFrame.zIndex = 5;
+      if (!printMode && tool === "select") {
+        selectionFrame.eventMode = "static";
+        selectionFrame.cursor = "move";
+        selectionFrame.hitArea = new Rectangle(minX, minY, maxX - minX, maxY - minY);
+        selectionFrame.on("pointerdown", (event: FederatedPointerEvent) => {
+          if (event.button !== 0) return;
+          event.stopPropagation();
+          const members = selectedPositions.flatMap<GroupDragMember>((position) => {
+            const studentId = assignments[position.seat.id];
+            const node = studentId ? tokenNodesRef.current.get(studentId) : undefined;
+            if (!studentId || !node) return [];
+            return [{
+              studentId,
+              seatId: position.seat.id,
+              node,
+              startPosition: new Point(node.x, node.y),
+              width: position.width,
+              height: position.height,
+            }];
+          });
+          if (members.length < 2) return;
+          selectionFrame.cursor = "grabbing";
+          groupDragRef.current = {
+            members,
+            startPointer: root.toLocal(event.global),
+            offset: new Point(0, 0),
+            bounds: new Rectangle(minX, minY, maxX - minX, maxY - minY),
+            frame: selectionFrame,
+            moved: false,
+          };
+        });
+      }
       root.addChild(selectionFrame);
     }
 
@@ -1082,6 +1307,34 @@ export function ClassroomCanvas({
 
       app.stage.on("pointermove", (event: FederatedPointerEvent) => {
         if (latestRef.current.printMode) return;
+        const groupDrag = groupDragRef.current;
+        if (groupDrag && rootRef.current) {
+          const pointer = rootRef.current.toLocal(event.global);
+          const rawOffsetX = pointer.x - groupDrag.startPointer.x;
+          const rawOffsetY = pointer.y - groupDrag.startPointer.y;
+          if (Math.hypot(rawOffsetX, rawOffsetY) > 5) groupDrag.moved = true;
+          if (groupDrag.moved) {
+            const offsetX = clamp(
+              rawOffsetX,
+              16 - groupDrag.bounds.x,
+              LOGICAL_WIDTH - 16 - groupDrag.bounds.x - groupDrag.bounds.width,
+            );
+            const offsetY = clamp(
+              rawOffsetY,
+              16 - groupDrag.bounds.y,
+              LOGICAL_HEIGHT - 20 - groupDrag.bounds.y - groupDrag.bounds.height,
+            );
+            groupDrag.offset.set(offsetX, offsetY);
+            groupDrag.frame.position.set(offsetX, offsetY);
+            groupDrag.frame.zIndex = 90;
+            groupDrag.members.forEach((member, index) => {
+              member.node.position.set(member.startPosition.x + offsetX, member.startPosition.y + offsetY);
+              member.node.zIndex = 100 + index;
+            });
+          }
+          return;
+        }
+
         const drag = dragRef.current;
         if (drag) {
           const distance = Math.hypot(event.global.x - drag.startPointer.x, event.global.y - drag.startPointer.y);
@@ -1179,7 +1432,7 @@ export function ClassroomCanvas({
 
         if (activeTool === "seat") {
           const sample = [...seatPositionsRef.current.values()][0];
-          const width = sample?.width ?? 96;
+          const width = sample?.width ?? STANDARD_SEAT_WIDTH;
           const height = sample?.height ?? 54;
           const x = clamp(snap(point.x - width / 2), 16, LOGICAL_WIDTH - width - 16);
           const y = clamp(snap(point.y - height / 2), 126, LOGICAL_HEIGHT - height - 20);
@@ -1249,6 +1502,10 @@ export function ClassroomCanvas({
       const completePointer = (event: FederatedPointerEvent) => {
         if (latestRef.current.printMode) return;
         if (event.button === 2) return;
+        if (groupDragRef.current) {
+          finishGroupDragRef.current();
+          return;
+        }
         if (dragRef.current) {
           finishDragRef.current(event);
           return;
@@ -1479,7 +1736,7 @@ export function ClassroomCanvas({
       aria-describedby="canvas-student-actions-help"
       tabIndex={printMode ? undefined : 0}
     >
-      <span className="visually-hidden" id="canvas-student-actions-help">讲台两侧的加号可添加左右护法座位；右键学生可打开操作菜单；键盘用户先选择学生，再按 Shift 加 F10。</span>
+      <span className="visually-hidden" id="canvas-student-actions-help">讲台两侧的加号可添加左右护法座位；多选学生后可拖动选区框内空白处整体移动；右键学生可打开操作菜单；键盘用户先选择学生，再按 Shift 加 F10。</span>
       <div className="canvas-grid" />
       <div className="pixi-host" ref={hostRef} />
       {!printMode && studentContextMenu && (
@@ -1506,7 +1763,7 @@ export function ClassroomCanvas({
               key={contextMenuStudent.id}
               studentName={contextMenuStudent.name}
               tags={contextMenuStudent.tags}
-              onAddTag={(tag) => onAddStudentTag(contextMenuStudent.id, tag)}
+              onToggleTag={(tag) => onAddStudentTag(contextMenuStudent.id, tag)}
             />
           )}
           <button
@@ -1572,15 +1829,22 @@ export function ClassroomCanvas({
           </button>
         </div>
       )}
-      {!printMode && ruleTooltip && !studentContextMenu && (
+      {!printMode && statusTooltip && !studentContextMenu && (
         <div
-          className="student-rule-tooltip"
+          className="student-status-tooltip"
           role="tooltip"
-          style={{ left: ruleTooltip.x, top: ruleTooltip.y }}
+          style={{ left: statusTooltip.x, top: statusTooltip.y }}
         >
-          <strong>{ruleTooltip.studentName} · {ruleTooltip.total} 条规则</strong>
-          {ruleTooltip.items.map((item) => <span key={item}>{item}</span>)}
-          {ruleTooltip.total > ruleTooltip.items.length && <small>另有 {ruleTooltip.total - ruleTooltip.items.length} 条</small>}
+          <strong>{statusTooltip.title}</strong>
+          {statusTooltip.items.map((item, index) => (
+            <span
+              className={statusTooltip.itemDisplay === "tag" ? "tag" : undefined}
+              key={`${item}-${index}`}
+            >
+              {item}
+            </span>
+          ))}
+          {statusTooltip.hiddenCount > 0 && <small>另有 {statusTooltip.hiddenCount} 项</small>}
         </div>
       )}
       {!printMode && (

@@ -8,7 +8,7 @@ const students: Student[] = Array.from({ length: 8 }, (_, index) => ({
   name: `学生${index}`,
   gender: index % 2 ? "女" : "男",
   className: "测试班",
-  score: 80 + index * 5,
+  score: (["A", "B", "C", "D"] as const)[index % 4],
   height: 150 + index * 4,
   appearance: index + 1,
 }));
@@ -95,7 +95,7 @@ describe("candidate generation", () => {
       tags: [
         ...(index < 4 ? ["视力关注"] : []),
         ...(index % 2 === 0 ? ["组长候选"] : []),
-        ...(index % 2 === 1 ? ["数学优势"] : []),
+        ...(index % 2 === 1 ? ["学科优势"] : []),
       ],
     }));
     const candidate = createCandidates(
@@ -117,7 +117,7 @@ describe("candidate generation", () => {
       student.tags.includes("组长候选") && seatByStudent.get(student.id)?.group === group
     )).length);
     const subjectCounts = [0, 1].map((group) => taggedStudents.filter((student) => (
-      student.tags.includes("数学优势") && seatByStudent.get(student.id)?.group === group
+      student.tags.includes("学科优势") && seatByStudent.get(student.id)?.group === group
     )).length);
     expect(leaderCounts).toEqual([2, 2]);
     expect(subjectCounts).toEqual([2, 2]);

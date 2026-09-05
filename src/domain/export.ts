@@ -193,7 +193,7 @@ export async function downloadStudentImportTemplate(className: string) {
     { header: "性别", key: "gender", width: 10 },
     { header: "班级", key: "className", width: 18 },
     { header: "学号", key: "studentNo", width: 18 },
-    { header: "成绩", key: "score", width: 12 },
+    { header: "成绩等级", key: "score", width: 12 },
     { header: "身高(cm)", key: "height", width: 14 },
     { header: "标签", key: "tags", width: 28 },
   ];
@@ -203,10 +203,13 @@ export async function downloadStudentImportTemplate(className: string) {
   sheet.getRow(1).eachCell((cell) => {
     cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2F6FED" } };
   });
-  sheet.addRow({ name: "张同学", gender: "男", className, studentNo: "2026001", score: 580, height: 172, tags: "组长候选、体育委员" });
-  sheet.addRow({ name: "李同学", gender: "女", className, studentNo: "2026002", score: 605, height: 165, tags: "视力关注" });
+  sheet.addRow({ name: "张同学", gender: "男", className, studentNo: "2026001", score: "A", height: 172, tags: "组长候选、体育委员" });
+  sheet.addRow({ name: "李同学", gender: "女", className, studentNo: "2026002", score: "B", height: 165, tags: "视力关注" });
   sheet.getColumn("gender").eachCell((cell, rowNumber) => {
     if (rowNumber > 1) cell.dataValidation = { type: "list", allowBlank: true, formulae: ['"男,女"'] };
+  });
+  sheet.getColumn("score").eachCell((cell, rowNumber) => {
+    if (rowNumber > 1) cell.dataValidation = { type: "list", allowBlank: true, formulae: ['"A,B,C,D"'] };
   });
   const note = workbook.addWorksheet("填写说明");
   note.columns = [{ width: 20 }, { width: 66 }];
@@ -216,7 +219,8 @@ export async function downloadStudentImportTemplate(className: string) {
     ["性别", "选填；填写时只使用“男”或“女”"],
     ["班级", `可留空；导入时将使用当前班级“${className}”`],
     ["学号", "必填；重复学号会更新已有学生"],
-    ["成绩、身高", "选填，只填写数字"],
+    ["成绩等级", "选填；只使用 A、B、C、D"],
+    ["身高", "选填，只填写数字"],
     ["标签", "选填；多个标签使用顿号、逗号或分号分隔"],
   ]);
   note.getRow(1).font = { bold: true };
@@ -268,6 +272,32 @@ function buildCompactCanvas(options: SeatingExportOptions) {
     context.fillText("课", x, y + 1);
   };
 
+  const drawSeatName = (
+    text: string,
+    student: Student | undefined,
+    centerX: number,
+    centerY: number,
+    maxWidth: number,
+    nameFont: string,
+    color: string,
+  ) => {
+    context.save();
+    context.font = nameFont;
+    const nameWidth = context.measureText(text).width;
+    const horizontalScale = Math.min(1, maxWidth / Math.max(1, nameWidth));
+    context.translate(centerX, centerY);
+    context.scale(horizontalScale, 1);
+    context.textAlign = "center";
+    context.fillStyle = options.showGender && student?.gender === "男"
+      ? "#4e77a9"
+      : options.showGender && student?.gender === "女"
+        ? "#d15f7a"
+        : color;
+    context.font = nameFont;
+    context.fillText(text, 0, 0);
+    context.restore();
+  };
+
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.fillStyle = ink;
@@ -312,9 +342,15 @@ function buildCompactCanvas(options: SeatingExportOptions) {
     context.roundRect(x, podiumY, width, podiumHeight, 8);
     context.fill();
     context.stroke();
-    context.fillStyle = ink;
-    context.font = '600 25px "Microsoft YaHei", "PingFang SC", sans-serif';
-    context.fillText(seat.disabled ? "×" : student?.name ?? "空位", x + width / 2, podiumY + 30);
+    drawSeatName(
+      seat.disabled ? "×" : student?.name ?? "空位",
+      seat.disabled ? undefined : student,
+      x + width / 2,
+      podiumY + 30,
+      width - 24,
+      '600 25px "Microsoft YaHei", "PingFang SC", sans-serif',
+      seat.disabled ? muted : ink,
+    );
     if (!seat.disabled) drawRepresentativeBadge(student, x + 17, podiumY + 17);
     context.fillStyle = muted;
     context.font = '500 17px "Microsoft YaHei", "PingFang SC", sans-serif';
@@ -349,13 +385,19 @@ function buildCompactCanvas(options: SeatingExportOptions) {
       context.roundRect(x, y, seatWidth, rowHeight, 8);
       context.fill();
       context.stroke();
-      context.textAlign = "center";
-      context.fillStyle = seat.disabled ? muted : ink;
-      context.font = `700 ${seatWidth < 120 ? 24 : 29}px "Microsoft YaHei", "PingFang SC", sans-serif`;
-      context.fillText(seat.disabled ? "×" : student?.name ?? "空位", x + seatWidth / 2, y + (student ? 38 : rowHeight / 2));
+      const hasStudentNumber = Boolean(student && options.showStudentNo && student.studentNo);
+      drawSeatName(
+        seat.disabled ? "×" : student?.name ?? "空位",
+        seat.disabled ? undefined : student,
+        x + seatWidth / 2,
+        y + (hasStudentNumber ? 38 : rowHeight / 2),
+        seatWidth - 18,
+        `700 ${seatWidth < 120 ? 24 : 29}px "Microsoft YaHei", "PingFang SC", sans-serif`,
+        seat.disabled ? muted : ink,
+      );
       if (!seat.disabled) drawRepresentativeBadge(student, x + 17, y + 17);
       if (student) {
-        const detail = [options.showGender ? student.gender : "", options.showStudentNo ? student.studentNo?.slice(-3) : ""].filter(Boolean).join(" · ");
+        const detail = options.showStudentNo ? student.studentNo?.slice(-3) ?? "" : "";
         if (detail) {
           context.fillStyle = muted;
           context.font = '500 17px "Microsoft YaHei", "PingFang SC", sans-serif';

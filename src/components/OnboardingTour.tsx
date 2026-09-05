@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Check, MousePointer2, PanelsTopLeft, Upload, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, ListChecks, MousePointer2, PanelsTopLeft, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 interface OnboardingTourProps {
@@ -32,6 +32,15 @@ const tourSteps = [
     title: "拖动姓名签即可调整座位",
     description: "左侧是待入座名单，中间是座位画布，右侧可以设置规则并生成方案；不满意时再次生成即可。",
     tip: "顶部的撤销和重做可以恢复最近操作。",
+  },
+  {
+    target: "rule-config",
+    placement: "left" as const,
+    icon: ListChecks,
+    eyebrow: "规则配置",
+    title: "最后配置学生关系规则",
+    description: "先在名单或画布中选择至少两名学生，再打开右侧“规则”页，可设置同桌、不得同桌、相邻或不相邻关系。生成方案时会自动遵守这些规则。",
+    tip: "规则属于硬约束；存在冲突时，系统会明确提示需要调整的关系。",
   },
 ];
 
@@ -104,6 +113,12 @@ export function OnboardingTour({ onFinish }: OnboardingTourProps) {
       };
     }
     const gap = 22;
+    if (step.placement === "left") {
+      return {
+        left: clamp(targetRect.left - cardWidth - gap, 16, window.innerWidth - cardWidth - 16),
+        top: clamp(targetRect.top + 34, 16, window.innerHeight - 360),
+      };
+    }
     if (step.placement === "right") {
       return {
         left: clamp(targetRect.right + gap, 16, window.innerWidth - cardWidth - 16),

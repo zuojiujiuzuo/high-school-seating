@@ -40,13 +40,18 @@ export function ExportPreview({
         {!seat.disabled && student?.isClassRepresentative && (
           <span className="print-seat-representative" aria-label="课代表">课</span>
         )}
-        <strong aria-label={seat.disabled ? "停用座位" : undefined}>{seat.disabled ? "×" : student?.name ?? "空位"}</strong>
-        {!seat.disabled && student && (showGender || showStudentNo) && (
-          <small>
-            {showGender ? student.gender : ""}
-            {showGender && showStudentNo ? " · " : ""}
-            {showStudentNo ? student.studentNo?.slice(-3) : ""}
-          </small>
+        <strong aria-label={seat.disabled ? "停用座位" : undefined}>
+          {seat.disabled ? "×" : (
+            <span
+              className={`print-seat-name${student && showGender && student.gender !== "未填写" ? ` is-${student.gender === "男" ? "male" : "female"}` : ""}`}
+              aria-label={student && showGender && student.gender !== "未填写" ? `${student.name}，${student.gender}生` : undefined}
+            >
+              {student?.name ?? "空位"}
+            </span>
+          )}
+        </strong>
+        {!seat.disabled && student && showStudentNo && (
+          <small>{student.studentNo?.slice(-3)}</small>
         )}
       </div>
     );

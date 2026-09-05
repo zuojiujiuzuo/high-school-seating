@@ -9,6 +9,7 @@ import type {
   Student,
 } from "../types";
 import { rearrangeAssignments } from "./rules";
+import { scoreGradeValue } from "./scoreGrades";
 import { isSystemStudentTag } from "./studentTags";
 
 function seededShuffle<T>(items: T[], seed: number) {
@@ -207,7 +208,7 @@ export function createCandidates(
   const separateGenders = strategySet.has("gender_separated");
   const metric = (id: string) => {
     const student = studentMap.get(id);
-    return (student?.score ?? 110) * weights.score
+    return scoreGradeValue(student?.score) * weights.score
       + (student?.height ?? 168) * weights.height
       + (student?.appearance ?? 5) * weights.appearance;
   };
@@ -223,12 +224,12 @@ export function createCandidates(
         const student = studentMap.get(id);
         const values: number[] = [];
         if (strategySet.has("score_spread")) {
-          values.push(normalize(student?.score ?? 110, 0, 150));
+          values.push(normalize(scoreGradeValue(student?.score), 0, 150));
         }
         if (strategySet.has("group_balanced")) {
           const weightTotal = Math.max(weights.score + weights.height + weights.appearance, 1);
           values.push((
-            normalize(student?.score ?? 110, 0, 150) * weights.score
+            normalize(scoreGradeValue(student?.score), 0, 150) * weights.score
             + normalize(student?.height ?? 168, 140, 200) * weights.height
             + normalize(student?.appearance ?? 5, 1, 10) * weights.appearance
           ) / weightTotal);

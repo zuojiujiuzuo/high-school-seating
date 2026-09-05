@@ -1,4 +1,5 @@
 import type { ProjectState, UiFontSize } from "../types";
+import { inferLegacyScoreMaximum, normalizeStoredScoreGrade } from "../domain/scoreGrades";
 import { EXAMPLE_CLASS_NAME, initialAssignments, students } from "./mockData";
 
 export const PROJECT_STORAGE_KEY = "banzhen-project-v2";
@@ -95,10 +96,14 @@ export function loadProjectState(className = EXAMPLE_CLASS_NAME, versionName = "
       : stored.doorPlacement
         ? [stored.doorPlacement]
         : [...defaultProjectState.doorPlacements];
+    const storedStudents = Array.isArray(stored.students) ? stored.students : undefined;
+    const legacyScoreMaximum = inferLegacyScoreMaximum(storedStudents?.map((student) => student.score) ?? []);
     return {
       ...freshProject(className),
       ...stored,
-      students: Array.isArray(stored.students) ? stored.students : freshProject(className).students,
+      students: storedStudents
+        ? storedStudents.map((student) => ({ ...student, score: normalizeStoredScoreGrade(student.score, legacyScoreMaximum) }))
+        : freshProject(className).students,
       layoutConfig: { ...defaultProjectState.layoutConfig, ...stored.layoutConfig },
       guardianSides,
       doorPlacements,

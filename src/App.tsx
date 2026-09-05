@@ -1,4 +1,5 @@
 import {
+  ArchiveRestore,
   ArrowRight,
   Check,
   ChevronDown,
@@ -21,15 +22,19 @@ import {
   CreateVersionDialog,
   DeleteStudentDialog,
   DeleteWorkspaceDialog,
+  DialogSelect,
   LockScreen,
+  RestoreDataDialog,
   StudentBatchDialog,
   StudentEditorDialog,
+  StudentInfoManagerDialog,
   type StudentBulkPatch,
   type VersionCopyMode,
 } from "./components/AppDialogs";
 import { ClassroomCanvas } from "./components/ClassroomCanvas";
 import { ExportPreview } from "./components/ExportPreview";
 import { LegalNoticeDialog } from "./components/LegalNoticeDialog";
+import { LicenseGate, LicenseSettingsCard } from "./components/LicenseGate";
 import { OnboardingTour } from "./components/OnboardingTour";
 import { RosterSidebar } from "./components/RosterSidebar";
 import { SeatLayoutOverlay } from "./components/SeatLayoutOverlay";
@@ -50,6 +55,13 @@ import {
   students as initialStudents,
 } from "./data/mockData";
 import {
+  importLicenseFile,
+  initialLicenseStatus,
+  licenseFailure,
+  readLicenseStatus,
+  type LicenseStatus,
+} from "./data/license";
+import {
   createEmptyProjectState,
   deleteProjectState,
   LEGAL_STORAGE_KEY,
@@ -60,10 +72,22 @@ import {
   saveProjectState,
   type Preferences,
 } from "./data/projectState";
+import {
+  collectDataBackup,
+  decryptDataBackup,
+  downloadDataBackup,
+  encryptDataBackup,
+  restoreDataBackup,
+  summarizeDataBackup,
+  type DataBackupPayload,
+  type DataBackupSummary,
+} from "./data/dataBackup";
+import { moveAssignmentGroup } from "./domain/assignments";
 import { createCandidates } from "./domain/candidates";
 import { downloadStudentImportTemplate, exportSeatingPlan } from "./domain/export";
 import { createGridSeats, createGuardianSeats, createPresetSeats, getLayoutPreset } from "./domain/layoutPresets";
 import { buildConstraints, findRuleConflicts } from "./domain/rules";
+import { parseScoreGrade, SCORE_GRADES } from "./domain/scoreGrades";
 import { parseStudentTags } from "./domain/studentImport";
 import { removeStudentFromProject } from "./domain/students";
 import { useHistory } from "./hooks/useHistory";
@@ -79,6 +103,7 @@ import type {
   LayoutConfig,
   LayoutPresetId,
   ProjectState,
+  ScoreGrade,
   SeatDefinition,
   SeatingCandidate,
   Student,
@@ -93,9 +118,15 @@ const WORKSPACE_CATALOG_STORAGE_KEY = "banzhen-workspace-catalog-v1";
 const ONBOARDING_STORAGE_KEY = "banzhen-onboarding-v1";
 const INITIAL_LAYOUT_STORAGE_KEY = "banzhen-initial-layout-v1";
 const PENDING_INITIAL_LAYOUT_STORAGE_KEY = "banzhen-pending-initial-layout-v1";
+const FIRST_IMPORT_AUTO_SEATED_STORAGE_KEY = "banzhen-first-import-auto-seated-v1";
+const DEFAULT_GENERATION_WEIGHTS: GenerationWeights = { score: 72, height: 58, appearance: 25 };
 
 function layoutWorkspaceId(className: string, versionName: string) {
   return `${encodeURIComponent(className)}:${encodeURIComponent(versionName)}`;
+}
+
+function firstImportAutoSeatedKey(className: string) {
+  return `${FIRST_IMPORT_AUTO_SEATED_STORAGE_KEY}:${encodeURIComponent(className)}`;
 }
 
 function needsInitialLayout(className: string, versionName: string) {
@@ -177,18 +208,27 @@ function App() {
   const [selectedRule, setSelectedRule] = useState<ConstraintType>("not_adjacent");
   const [ruleConflicts, setRuleConflicts] = useState<ReturnType<typeof findRuleConflicts>>([]);
   const [algorithms, setAlgorithms] = useState<GenerationStrategy[]>(["group_balanced"]);
-  const [generationWeights, setGenerationWeights] = useState<GenerationWeights>({ score: 72, height: 58, appearance: 25 });
+  const generationWeights = DEFAULT_GENERATION_WEIGHTS;
   const [candidates, setCandidates] = useState<SeatingCandidate[]>([]);
   const [activeCandidateId, setActiveCandidateId] = useState<string>();
   const [generationPulse, setGenerationPulse] = useState(0);
   const [printMode, setPrintMode] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [licenseStatus, setLicenseStatus] = useState<LicenseStatus>(initialLicenseStatus);
+  const [pendingDataRestore, setPendingDataRestore] = useState<{
+    fileName: string;
+    payload: DataBackupPayload;
+    summary: DataBackupSummary;
+  }>();
+  const [restoringData, setRestoringData] = useState(false);
   const [legalOpen, setLegalOpen] = useState(() => !window.localStorage.getItem(LEGAL_STORAGE_KEY));
   const [legalAcknowledged, setLegalAcknowledged] = useState(() => Boolean(window.localStorage.getItem(LEGAL_STORAGE_KEY)));
   const [importReady, setImportReady] = useState(false);
   const [toast, setToast] = useState<string>();
   const [studentEditor, setStudentEditor] = useState<{ mode: "create" } | { mode: "edit"; student: Student }>();
+  const [studentInfoManagerOpen, setStudentInfoManagerOpen] = useState(false);
+  const [returnToStudentInfoManager, setReturnToStudentInfoManager] = useState(false);
   const [studentPendingDeletion, setStudentPendingDeletion] = useState<Student>();
   const [bulkEditIds, setBulkEditIds] = useState<string[]>();
   const [advancedLayoutOpen, setAdvancedLayoutOpen] = useState(false);
@@ -253,6 +293,22 @@ function App() {
   }, [activeCandidate]);
 
   useEffect(() => {
+    let active = true;
+    void readLicenseStatus()
+      .then((status) => {
+        if (active) setLicenseStatus(status);
+      })
+      .catch((error) => {
+        if (active) {
+          setLicenseStatus(licenseFailure(error instanceof Error ? error.message : "无法读取本机授权状态"));
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!hasMissingGender) return;
     setAlgorithms((current) => {
       if (!current.includes("romance_guard")) return current;
@@ -280,7 +336,83 @@ function App() {
     toastTimer.current = window.setTimeout(() => setToast(undefined), 2800);
   };
 
+  const importOfflineLicense = async (file: File) => {
+    let nextStatus: LicenseStatus;
+    try {
+      nextStatus = await importLicenseFile(file);
+    } catch (error) {
+      nextStatus = licenseFailure(error instanceof Error ? error.message : "授权文件导入失败");
+    }
+    if (licenseStatus.state === "licensed" && nextStatus.state !== "licensed") {
+      showToast(nextStatus.message);
+      return nextStatus;
+    }
+    setLicenseStatus(nextStatus);
+    if (nextStatus.state === "licensed") {
+      showToast(`正版授权已验证：${nextStatus.licensee ?? nextStatus.licenseId}`);
+    }
+    return nextStatus;
+  };
+
+  const licenseRequired = licenseStatus.state !== "licensed";
+
+  const changeTheme = (nextTheme: AppTheme) => {
+    document.documentElement.classList.add("theme-switching");
+    setTheme(nextTheme);
+    window.localStorage.setItem("banzhen-theme", nextTheme);
+    showToast(nextTheme === "cute" ? "已切换到猫爪主题" : "已切换到简约主题");
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => document.documentElement.classList.remove("theme-switching"));
+    });
+  };
+
+  const exportAppData = async () => {
+    try {
+      saveProjectState(currentClass, currentVersion, history.value);
+      window.localStorage.setItem(WORKSPACE_CATALOG_STORAGE_KEY, JSON.stringify(workspaceCatalog));
+      window.localStorage.setItem("banzhen-current-class", currentClass);
+      window.localStorage.setItem("banzhen-current-version", currentVersion);
+      window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
+      window.localStorage.setItem("banzhen-theme", theme);
+      const exportedAt = new Date();
+      const payload = collectDataBackup(window.localStorage, exportedAt.toISOString());
+      const content = await encryptDataBackup(payload);
+      downloadDataBackup(content, exportedAt);
+      showToast("数据已加密导出为 .zj 文件");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "数据导出失败");
+      throw error;
+    }
+  };
+
+  const prepareDataRestore = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith(".zj")) {
+      throw new Error("请选择班阵导出的 .zj 文件");
+    }
+    try {
+      const payload = await decryptDataBackup(await file.text());
+      setPendingDataRestore({ fileName: file.name, payload, summary: summarizeDataBackup(payload) });
+      setSettingsOpen(false);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "数据导入失败");
+      throw error;
+    }
+  };
+
+  const confirmDataRestore = () => {
+    if (!pendingDataRestore) return;
+    setRestoringData(true);
+    try {
+      restoreDataBackup(pendingDataRestore.payload, window.localStorage);
+      window.location.reload();
+    } catch (error) {
+      setRestoringData(false);
+      showToast(error instanceof Error ? `恢复失败：${error.message}` : "数据恢复失败");
+    }
+  };
+
   useEffect(() => {
+    if (licenseStatus.state !== "licensed") return;
     setSaveStatus("saving");
     const timer = window.setTimeout(() => {
       try {
@@ -295,11 +427,12 @@ function App() {
       }
     }, 260);
     return () => window.clearTimeout(timer);
-  }, [currentClass, currentVersion, history.value, preferences]);
+  }, [currentClass, currentVersion, history.value, licenseStatus.state, preferences]);
 
   useEffect(() => {
+    if (licenseStatus.state !== "licensed") return;
     window.localStorage.setItem(WORKSPACE_CATALOG_STORAGE_KEY, JSON.stringify(workspaceCatalog));
-  }, [workspaceCatalog]);
+  }, [licenseStatus.state, workspaceCatalog]);
 
   useEffect(() => {
     const favicon = document.querySelector<HTMLLinkElement>("link[data-banzhen-favicon]");
@@ -318,6 +451,7 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (licenseStatus.state !== "licensed") return;
       const target = event.target as HTMLElement | null;
       const isEditing = target?.matches("input, textarea, select, [contenteditable='true']");
       if (event.key === "Escape") setTool("select");
@@ -330,7 +464,7 @@ function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [history.redo, history.undo]);
+  }, [history.redo, history.undo, licenseStatus.state]);
 
   const goToNextStep = () => {
     const currentIndex = steps.findIndex((step) => step.id === currentStep);
@@ -395,6 +529,7 @@ function App() {
       setCurrentClass(name);
       setCurrentVersion(initialVersion);
       setCurrentStep("seating");
+      window.localStorage.removeItem(firstImportAutoSeatedKey(name));
       window.localStorage.setItem(PENDING_INITIAL_LAYOUT_STORAGE_KEY, layoutWorkspaceId(name, initialVersion));
       setLayoutChooserRequired(true);
       setLayoutChooserOpen(true);
@@ -563,9 +698,28 @@ function App() {
         : [...current.students, savedStudent],
     }));
     setStudentEditor(undefined);
+    if (returnToStudentInfoManager) {
+      setStudentInfoManagerOpen(true);
+      setReturnToStudentInfoManager(false);
+    }
     setCandidates([]);
     setActiveCandidateId(undefined);
     showToast(isEditing ? `${savedStudent.name}的信息已更新` : `已添加${savedStudent.name}，可从待入座名单拖入座位`);
+  };
+
+  const updateStudentInlineInfo = (
+    studentId: string,
+    patch: Partial<Pick<Student, "gender" | "className" | "studentNo" | "score" | "height" | "tags">>,
+  ) => {
+    history.commit((current) => ({
+      ...current,
+      solutionConfirmed: false,
+      students: current.students.map((student) => student.id === studentId
+        ? { ...student, ...patch }
+        : student),
+    }));
+    setCandidates([]);
+    setActiveCandidateId(undefined);
   };
 
   const deleteStudent = () => {
@@ -602,17 +756,22 @@ function App() {
     const tag = rawTag.trim();
     const student = students.find((item) => item.id === studentId);
     if (!student || !tag) return;
-    if (student.tags?.includes(tag)) {
-      showToast(`${student.name}已有“${tag}”标签`);
-      return;
-    }
+    const shouldRemove = student.tags?.includes(tag) ?? false;
     history.commit((current) => ({
       ...current,
+      solutionConfirmed: false,
       students: current.students.map((item) => item.id === studentId
-        ? { ...item, tags: [...(item.tags ?? []), tag] }
+        ? {
+          ...item,
+          tags: shouldRemove
+            ? (item.tags ?? []).filter((currentTag) => currentTag !== tag)
+            : [...(item.tags ?? []), tag],
+        }
         : item),
     }));
-    showToast(`已为${student.name}添加“${tag}”标签`);
+    setCandidates([]);
+    setActiveCandidateId(undefined);
+    showToast(shouldRemove ? `已取消${student.name}的“${tag}”标签` : `已为${student.name}添加“${tag}”标签`);
   };
 
   const applyBulkStudentPatch = (patch: StudentBulkPatch) => {
@@ -622,13 +781,18 @@ function App() {
       solutionConfirmed: false,
       students: current.students.map((student) => selected.has(student.id) ? {
         ...student,
+        ...(patch.gender !== undefined ? { gender: patch.gender } : {}),
         ...(patch.score !== undefined ? { score: patch.score } : {}),
         ...(patch.height !== undefined ? { height: patch.height } : {}),
-        ...(patch.clearTags ? { tags: [] } : patch.tag ? { tags: [patch.tag] } : {}),
+        ...(patch.clearTags ? { tags: [] } : patch.tag ? { tags: [...new Set([...(student.tags ?? []), patch.tag])] } : {}),
       } : student),
     }));
     const count = selected.size;
     setBulkEditIds(undefined);
+    if (returnToStudentInfoManager) {
+      setStudentInfoManagerOpen(true);
+      setReturnToStudentInfoManager(false);
+    }
     setCandidates([]);
     setActiveCandidateId(undefined);
     showToast(`已更新 ${count} 名学生`);
@@ -648,6 +812,21 @@ function App() {
     setCandidates([]);
     setActiveCandidateId(undefined);
     showToast("换位完成，可随时撤销");
+  };
+
+  const moveSelectedSeats = (sourceSeatIds: string[], targetSeatIds: string[]) => {
+    history.commit((current) => ({
+      ...current,
+      solutionConfirmed: false,
+      assignments: moveAssignmentGroup(
+        activeCandidate?.assignments ?? current.assignments,
+        sourceSeatIds,
+        targetSeatIds,
+      ),
+    }));
+    setCandidates([]);
+    setActiveCandidateId(undefined);
+    showToast(`已整体移动 ${sourceSeatIds.length} 名学生，可随时撤销`);
   };
 
   const seatStudent = (studentId: string, seatId: string) => {
@@ -891,7 +1070,7 @@ function App() {
 
   const exportAssignments = async (
     assignments: AssignmentMap,
-    format: ExportFormat,
+    format: Exclude<ExportFormat, "zj">,
     variant: ExportVariant,
   ) => {
     const sourceCanvas = format === "xlsx" || variant === "compact"
@@ -920,6 +1099,10 @@ function App() {
   };
 
   const handleExport = async () => {
+    if (exportFormat === "zj") {
+      await exportAppData();
+      return;
+    }
     try {
       const message = await exportAssignments(displayAssignments, exportFormat, exportVariant);
       showToast(message);
@@ -1002,7 +1185,7 @@ function App() {
     return <button className="workflow-primary" type="button" onClick={goToNextStep}>下一步 <ArrowRight size={17} /></button>;
   };
 
-  const usesStructuredExportPreview = currentStep === "export" && (exportFormat === "xlsx" || exportVariant === "compact");
+  const usesStructuredExportPreview = currentStep === "export" && (exportFormat === "xlsx" || exportFormat === "zj" || exportVariant === "compact");
   const isCanvasStep = currentStep === "layout"
     || currentStep === "seating"
     || (currentStep === "export" && !usesStructuredExportPreview);
@@ -1030,6 +1213,7 @@ function App() {
             savedAt={savedAt}
             saveStatus={saveStatus}
             legalAcknowledged={legalAcknowledged}
+            licenseStatus={licenseStatus}
             theme={theme}
             fontSize={preferences.fontSize}
             canUndo={history.canUndo}
@@ -1042,6 +1226,7 @@ function App() {
             }}
             onVersionChange={(value) => switchWorkspace(currentClass, value)}
             onCreateClass={() => setCreateClassOpen(true)}
+            onImportClassFile={prepareDataRestore}
             onClearClass={() => setClearClassOpen(true)}
             onDeleteClass={() => setDeleteWorkspaceTarget("class")}
             onCreateVersion={() => setCreateVersionOpen(true)}
@@ -1050,16 +1235,22 @@ function App() {
             onRedo={handleRedo}
             onTogglePrint={enterPrintMode}
             onOpenSettings={() => setSettingsOpen(true)}
-            onOpenOnboarding={() => setOnboardingOpen(true)}
-            onOpenLegal={() => setLegalOpen(true)}
-            onThemeChange={(nextTheme) => {
-              setTheme(nextTheme);
-              window.localStorage.setItem("banzhen-theme", nextTheme);
-              showToast(nextTheme === "cute" ? "已切换到猫爪可爱主题" : "已切换到简约主题");
+            onOpenLicense={() => setSettingsOpen(true)}
+            onOpenOnboarding={() => {
+              setCurrentStep("seating");
+              setTool("select");
+              setOnboardingOpen(true);
             }}
+            onOpenLegal={() => setLegalOpen(true)}
+            onThemeChange={changeTheme}
             onFontSizeChange={(fontSize) => {
               setPreferences((current) => ({ ...current, fontSize }));
-              showToast(fontSize === "auto" ? "字体将随窗口大小自动调整" : fontSize === "large" ? "已切换为大字" : "已切换为标准字体");
+              showToast({
+                auto: "字体将随窗口大小自动调整",
+                standard: "已切换为标准字体",
+                large: "已切换为大字",
+                xlarge: "已切换为超大字",
+              }[fontSize]);
             }}
           />
         </>
@@ -1075,6 +1266,7 @@ function App() {
             onDeleteStudent={setStudentPendingDeletion}
             onOpenImport={() => setImportOpen(true)}
             onAddStudent={() => setStudentEditor({ mode: "create" })}
+            onOpenStudentInfo={() => setStudentInfoManagerOpen(true)}
           />
         )}
 
@@ -1130,7 +1322,6 @@ function App() {
               assignments={currentStep === "layout" ? EMPTY_LAYOUT_ASSIGNMENTS : displayAssignments}
               selectedStudentIds={printMode ? [] : selectedIds}
               constraints={history.value.constraints}
-              previewRuleType={!printMode && currentStep === "seating" ? selectedRule : undefined}
               tool={currentStep === "export" ? "select" : tool}
               reducedMotion={reducedMotion}
               generationPulse={generationPulse}
@@ -1144,6 +1335,7 @@ function App() {
                 setRuleConflicts([]);
               }}
               onSwap={swapSeats}
+              onMoveStudentGroup={moveSelectedSeats}
               onSeatStudent={seatStudent}
               onAddSeat={addCanvasSeat}
               onMoveSeat={moveCanvasSeat}
@@ -1214,7 +1406,7 @@ function App() {
             onDeleteConstraintBatch={deleteConstraintBatch}
             algorithms={algorithms}
             hasMissingGender={hasMissingGender}
-            weights={generationWeights}
+            onOpenStudentInfo={() => setStudentInfoManagerOpen(true)}
             onAlgorithmToggle={(value) => {
               setAlgorithms((current) => {
                 if (value === "random") return ["random"];
@@ -1222,11 +1414,6 @@ function App() {
                 if (!withoutRandom.includes(value)) return [...withoutRandom, value];
                 return withoutRandom.length === 1 ? withoutRandom : withoutRandom.filter((strategy) => strategy !== value);
               });
-              setCandidates([]);
-              setActiveCandidateId(undefined);
-            }}
-            onWeightChange={(key, value) => {
-              setGenerationWeights((current) => ({ ...current, [key]: value }));
               setCandidates([]);
               setActiveCandidateId(undefined);
             }}
@@ -1256,9 +1443,10 @@ function App() {
               onThemeChange={setExportTheme}
               onVariantChange={setExportVariant}
               onExport={handleExport}
+              onImportClassFile={prepareDataRestore}
               onBack={() => setCurrentStep("seating")}
             />
-            {usesStructuredExportPreview && (
+            {usesStructuredExportPreview && exportFormat !== "zj" && (
               <ExportPreview
                 students={students}
                 seats={layoutSeats}
@@ -1270,6 +1458,22 @@ function App() {
                 versionName={currentVersion}
                 theme={exportTheme}
               />
+            )}
+            {exportFormat === "zj" && (
+              <section className="class-file-preview-shell" aria-labelledby="class-file-preview-title">
+                <div className="class-file-preview-card">
+                  <span className="class-file-preview-icon" aria-hidden="true"><ArchiveRestore size={34} strokeWidth={1.7} /></span>
+                  <span className="eyebrow">CLASS FILE · .ZJ</span>
+                  <h2 id="class-file-preview-title">班级文件用于整机迁移</h2>
+                  <p>导出后把文件带到新电脑，在同一位置选择“导入班级文件”，即可恢复整个工作区。</p>
+                  <dl>
+                    <div><dt>班级</dt><dd>{workspaceCatalog.classes.length}</dd></div>
+                    <div><dt>座位版本</dt><dd>{Object.values(workspaceCatalog.versionsByClass).reduce((total, versions) => total + versions.length, 0)}</dd></div>
+                    <div><dt>文件保护</dt><dd>AES-GCM 加密</dd></div>
+                  </dl>
+                  <div className="class-file-preview-tip"><LockKeyhole size={17} /><span>学生名单、规则、模板和界面设置会一起保存，导入前会先显示备份摘要供确认。</span></div>
+                </div>
+              </section>
             )}
           </>
         )}
@@ -1317,35 +1521,61 @@ function App() {
             const knownByNumber = new Map(history.value.students.filter((student) => student.studentNo).map((student) => [student.studentNo, student]));
             const updatedCount = importedStudents.filter((student) => student.studentNo && knownByNumber.has(student.studentNo)).length;
             const incomingCount = importedStudents.length - updatedCount;
-            history.commit((current) => {
-              const nextStudents = [...current.students];
-              importedStudents.forEach((student) => {
-                const existingIndex = student.studentNo
-                  ? nextStudents.findIndex((item) => item.studentNo === student.studentNo)
-                  : -1;
-                if (existingIndex >= 0) {
-                  const existing = nextStudents[existingIndex];
-                  nextStudents[existingIndex] = {
-                    ...existing,
-                    name: student.name,
-                    className: student.className,
-                    ...(student.studentNo ? { studentNo: student.studentNo } : {}),
-                    ...(student.gender !== "未填写" ? { gender: student.gender } : {}),
-                    ...(student.score !== undefined ? { score: student.score } : {}),
-                    ...(student.height !== undefined ? { height: student.height } : {}),
-                    ...(student.tags?.length ? { tags: student.tags } : {}),
-                  };
-                } else {
-                  nextStudents.push(student);
-                }
-              });
-              return { ...current, solutionConfirmed: false, students: nextStudents };
+            const nextStudents = [...history.value.students];
+            importedStudents.forEach((student) => {
+              const existingIndex = student.studentNo
+                ? nextStudents.findIndex((item) => item.studentNo === student.studentNo)
+                : -1;
+              if (existingIndex >= 0) {
+                const existing = nextStudents[existingIndex];
+                nextStudents[existingIndex] = {
+                  ...existing,
+                  name: student.name,
+                  className: student.className,
+                  ...(student.studentNo ? { studentNo: student.studentNo } : {}),
+                  ...(student.gender !== "未填写" ? { gender: student.gender } : {}),
+                  ...(student.score !== undefined ? { score: student.score } : {}),
+                  ...(student.height !== undefined ? { height: student.height } : {}),
+                  ...(student.tags?.length ? { tags: student.tags } : {}),
+                };
+              } else {
+                nextStudents.push(student);
+              }
             });
+            history.commit((current) => ({ ...current, solutionConfirmed: false, students: nextStudents }));
             setImportOpen(false);
             setImportReady(false);
-            setCandidates([]);
-            setActiveCandidateId(undefined);
-            showToast(`导入完成：新增 ${incomingCount} 人，更新 ${updatedCount} 人`);
+            const autoSeatingKey = firstImportAutoSeatedKey(currentClass);
+            const shouldAutoSeat = !window.localStorage.getItem(autoSeatingKey)
+              && layoutSeats.some((seat) => !seat.disabled);
+            if (shouldAutoSeat) {
+              const romanceGuardReady = nextStudents.every((student) => student.gender !== "未填写");
+              const defaultStrategies: GenerationStrategy[] = romanceGuardReady
+                ? ["romance_guard", "height"]
+                : ["height"];
+              generationSequence.current += 1;
+              const nextCandidates = createCandidates(
+                history.value.assignments,
+                layoutSeats,
+                history.value.constraints,
+                nextStudents,
+                { strategies: defaultStrategies },
+                generationWeights,
+                generationSequence.current,
+              );
+              setAlgorithms(defaultStrategies);
+              setCandidates(nextCandidates);
+              setActiveCandidateId(nextCandidates[0]?.id);
+              setGenerationPulse((current) => current + 1);
+              window.localStorage.setItem(autoSeatingKey, new Date().toISOString());
+              showToast(romanceGuardReady
+                ? `导入完成：新增 ${incomingCount} 人，更新 ${updatedCount} 人；已按防早恋＋身高生成方案`
+                : `导入完成：新增 ${incomingCount} 人，更新 ${updatedCount} 人；已按身高生成方案，补充性别后可启用防早恋`);
+            } else {
+              setCandidates([]);
+              setActiveCandidateId(undefined);
+              showToast(`导入完成：新增 ${incomingCount} 人，更新 ${updatedCount} 人`);
+            }
           }}
         />
       )}
@@ -1353,6 +1583,10 @@ function App() {
       {settingsOpen && (
         <SettingsDialog
           preferences={preferences}
+          licenseStatus={licenseStatus}
+          onExportData={exportAppData}
+          onImportData={prepareDataRestore}
+          onImportLicense={importOfflineLicense}
           onSave={(nextPreferences) => {
             setPreferences(nextPreferences);
             setSettingsOpen(false);
@@ -1362,12 +1596,47 @@ function App() {
         />
       )}
 
+      {pendingDataRestore && (
+        <RestoreDataDialog
+          fileName={pendingDataRestore.fileName}
+          exportedAt={pendingDataRestore.payload.exportedAt}
+          summary={pendingDataRestore.summary}
+          restoring={restoringData}
+          onClose={() => setPendingDataRestore(undefined)}
+          onConfirm={confirmDataRestore}
+        />
+      )}
+
       {studentEditor && (
         <StudentEditorDialog
           student={studentEditor.mode === "edit" ? studentEditor.student : undefined}
           defaultClassName={currentClass}
-          onClose={() => setStudentEditor(undefined)}
+          onClose={() => {
+            setStudentEditor(undefined);
+            if (returnToStudentInfoManager) {
+              setStudentInfoManagerOpen(true);
+              setReturnToStudentInfoManager(false);
+            }
+          }}
           onSave={saveStudent}
+        />
+      )}
+
+      {studentInfoManagerOpen && (
+        <StudentInfoManagerDialog
+          students={students}
+          onClose={() => setStudentInfoManagerOpen(false)}
+          onInlineUpdate={updateStudentInlineInfo}
+          onEdit={(student) => {
+            setStudentInfoManagerOpen(false);
+            setReturnToStudentInfoManager(true);
+            setStudentEditor({ mode: "edit", student });
+          }}
+          onBatchEdit={(studentIds) => {
+            setStudentInfoManagerOpen(false);
+            setReturnToStudentInfoManager(true);
+            setBulkEditIds(studentIds);
+          }}
         />
       )}
 
@@ -1392,7 +1661,13 @@ function App() {
       {bulkEditIds && (
         <StudentBatchDialog
           count={bulkEditIds.length}
-          onClose={() => setBulkEditIds(undefined)}
+          onClose={() => {
+            setBulkEditIds(undefined);
+            if (returnToStudentInfoManager) {
+              setStudentInfoManagerOpen(true);
+              setReturnToStudentInfoManager(false);
+            }
+          }}
           onSave={applyBulkStudentPatch}
         />
       )}
@@ -1464,12 +1739,15 @@ function App() {
       }} />}
 
       {onboardingOpen && !legalOpen && !layoutChooserOpen && <OnboardingTour onFinish={finishOnboarding} />}
+
+      {licenseRequired && <LicenseGate status={licenseStatus} onImport={importOfflineLicense} />}
     </div>
   );
 }
 
-const importFieldOptions = ["姓名", "学号", "性别", "班级", "成绩", "身高", "标签", "忽略此列"];
+const importFieldOptions = ["姓名", "学号", "性别", "班级", "成绩等级", "身高", "标签", "忽略此列"];
 const requiredImportFields = new Set(["姓名", "学号"]);
+const importScoreGradeOptions = SCORE_GRADES.map((grade) => ({ value: grade, label: grade }));
 
 type ImportCell = string | number | boolean | Date | null;
 
@@ -1491,7 +1769,7 @@ function guessImportField(header: string) {
   if (/性别|男女|gender|sex/.test(normalized)) return "性别";
   if (/班级|班别|class/.test(normalized)) return "班级";
   if (/学号|学籍|编号|student.?no|id/.test(normalized)) return "学号";
-  if (/成绩|分数|总分|score/.test(normalized)) return "成绩";
+  if (/成绩|等级|分数|总分|score|grade/.test(normalized)) return "成绩等级";
   if (/身高|height/.test(normalized)) return "身高";
   if (/标签|标记/.test(normalized) || /^(?:tags?|labels?)$/.test(normalized)) return "标签";
   return "忽略此列";
@@ -1688,7 +1966,7 @@ function ImportDialog({ ready, defaultClassName, onReady, onClose, onDownloadTem
     try {
       if (!file) {
         prepareRows([
-          ["学生姓名", "男女", "班级名称", "学籍号", "总成绩", "身高(cm)", "标签"],
+          ["学生姓名", "男女", "班级名称", "学籍号", "成绩等级", "身高(cm)", "标签"],
           ...initialStudents.map((student) => [student.name, student.gender, student.className, student.studentNo ?? "", student.score ?? "", student.height ?? "", student.tags?.join("、") ?? ""]),
         ], "示例学生名单.xlsx");
       } else if (file.name.toLocaleLowerCase().endsWith(".csv")) {
@@ -1735,11 +2013,20 @@ function ImportDialog({ ready, defaultClassName, onReady, onClose, onDownloadTem
     const indexFor = (target: string) => mappings.findIndex((mapping) => mapping === target);
     const classIndex = indexFor("班级");
     const genderIndex = indexFor("性别");
-    const scoreIndex = indexFor("成绩");
+    const scoreIndex = indexFor("成绩等级");
     const heightIndex = indexFor("身高");
     const tagsIndex = indexFor("标签");
     const valueAt = (row: ImportCell[], index: number) => index >= 0 ? row[index] : null;
     const incompleteRows: number[] = [];
+    const invalidScoreRows = scoreIndex < 0 ? [] : rows.slice(1).flatMap((row, index) => {
+      const value = importCellText(valueAt(row, scoreIndex)).trim();
+      return value && !parseScoreGrade(value) ? [index + 2] : [];
+    });
+    if (invalidScoreRows.length) {
+      const shownRows = invalidScoreRows.slice(0, 5).join("、");
+      setError(`第 ${shownRows}${invalidScoreRows.length > 5 ? " 等" : ""} 行的成绩等级无效，只能选择 A、B、C 或 D`);
+      return;
+    }
     const imported = rows.slice(1).map((row, index): Student | undefined => {
       const name = importCellText(valueAt(row, nameIndex)).trim();
       const studentNo = importCellText(valueAt(row, numberIndex)).trim();
@@ -1758,7 +2045,7 @@ function ImportDialog({ ready, defaultClassName, onReady, onClose, onDownloadTem
         gender: normalizeImportGender(valueAt(row, genderIndex)),
         className: importCellText(valueAt(row, classIndex)).trim() || defaultClassName,
         studentNo,
-        score: toOptionalNumber(valueAt(row, scoreIndex)),
+        score: parseScoreGrade(valueAt(row, scoreIndex)),
         height: toOptionalNumber(valueAt(row, heightIndex)),
         tags: parseStudentTags(valueAt(row, tagsIndex)),
       };
@@ -1880,14 +2167,30 @@ function ImportDialog({ ready, defaultClassName, onReady, onClose, onDownloadTem
                       {headers.map((header, columnIndex) => {
                         const isRequiredColumn = columnIndex === nameIndex || columnIndex === numberIndex;
                         const isMissingRequiredValue = isRequiredColumn && !importCellText(row[columnIndex]).trim();
+                        const isScoreGradeColumn = mappings[columnIndex] === "成绩等级";
+                        const scoreGrade = parseScoreGrade(row[columnIndex]) ?? "";
+                        const isInvalidScoreGrade = isScoreGradeColumn && Boolean(importCellText(row[columnIndex]).trim()) && !scoreGrade;
                         return (
-                          <td className={isMissingRequiredValue ? "is-required-missing" : ""} key={`${header}-${columnIndex}`}>
-                            <input
-                              aria-label={`第 ${dataRowIndex + 2} 行，${header}`}
-                              aria-invalid={isMissingRequiredValue || undefined}
-                              value={importCellText(row[columnIndex])}
-                              onChange={(event) => updatePreviewCell(dataRowIndex, columnIndex, event.target.value)}
-                            />
+                          <td className={isMissingRequiredValue || isInvalidScoreGrade ? "is-required-missing" : ""} key={`${header}-${columnIndex}`}>
+                            {isScoreGradeColumn ? (
+                              <DialogSelect<ScoreGrade | "">
+                                id={`import-score-grade-${dataRowIndex}-${columnIndex}`}
+                                label={`第 ${dataRowIndex + 2} 行，成绩等级`}
+                                className="import-score-grade-select score-grade-select"
+                                value={scoreGrade}
+                                options={importScoreGradeOptions}
+                                placeholder={isInvalidScoreGrade ? "需选择" : "请选择"}
+                                invalid={isInvalidScoreGrade}
+                                onChange={(grade) => updatePreviewCell(dataRowIndex, columnIndex, grade)}
+                              />
+                            ) : (
+                              <input
+                                aria-label={`第 ${dataRowIndex + 2} 行，${header}`}
+                                aria-invalid={isMissingRequiredValue || undefined}
+                                value={importCellText(row[columnIndex])}
+                                onChange={(event) => updatePreviewCell(dataRowIndex, columnIndex, event.target.value)}
+                              />
+                            )}
                           </td>
                         );
                       })}
@@ -1913,8 +2216,19 @@ function ImportDialog({ ready, defaultClassName, onReady, onClose, onDownloadTem
   );
 }
 
-function SettingsDialog({ preferences, onSave, onClose }: { preferences: Preferences; onSave: (preferences: Preferences) => void; onClose: () => void }) {
+function SettingsDialog({ preferences, licenseStatus, onExportData, onImportData, onImportLicense, onSave, onClose }: {
+  preferences: Preferences;
+  licenseStatus: LicenseStatus;
+  onExportData: () => Promise<void>;
+  onImportData: (file: File) => Promise<void>;
+  onImportLicense: (file: File) => Promise<LicenseStatus>;
+  onSave: (preferences: Preferences) => void;
+  onClose: () => void;
+}) {
   const [draft, setDraft] = useState(preferences);
+  const [dataAction, setDataAction] = useState<"export" | "import">();
+  const [dataError, setDataError] = useState<string>();
+  const importInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -1926,13 +2240,47 @@ function SettingsDialog({ preferences, onSave, onClose }: { preferences: Prefere
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="modal settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
         <header className="modal-header">
-          <div><span className="eyebrow">PREFERENCES</span><h2 id="settings-title">界面偏好</h2></div>
+          <div><span className="eyebrow">SETTINGS</span><h2 id="settings-title">设置与授权</h2></div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="关闭"><X size={19} /></button>
         </header>
         <div className="settings-list">
           <label><span><Sparkles size={18} /><b>降低动态效果</b><small>关闭弧线换位、波浪入座和脉冲反馈</small></span><input type="checkbox" checked={draft.reducedMotion} onChange={(event) => setDraft((current) => ({ ...current, reducedMotion: event.target.checked }))} /></label>
           <label><span><Keyboard size={18} /><b>显示快捷键提示</b><small>在按钮和菜单中显示键盘操作</small></span><input type="checkbox" checked={draft.showShortcutHints} onChange={(event) => setDraft((current) => ({ ...current, showShortcutHints: event.target.checked }))} /></label>
           <label><span><LockKeyhole size={18} /><b>离开时自动锁定</b><small>切换到其他窗口时遮挡学生信息</small></span><input type="checkbox" checked={draft.autoLock} onChange={(event) => setDraft((current) => ({ ...current, autoLock: event.target.checked }))} /></label>
+        </div>
+        <div className="settings-license-section">
+          <div className="settings-section-heading"><span className="eyebrow">OFFLINE LICENSE</span><h3>正版验证</h3></div>
+          <LicenseSettingsCard status={licenseStatus} onImport={onImportLicense} />
+        </div>
+        <div className="settings-data-section">
+          <div className="settings-section-heading"><span className="eyebrow">DATA TRANSFER</span><h3>数据迁移</h3></div>
+          <div className="settings-data-card">
+            <div className="settings-data-copy"><LockKeyhole size={19} /><span><b>换电脑也能继续使用</b><small>导出全部班级、座位版本、规则和设置。文件内容为加密数据，导入后可直接恢复。</small></span></div>
+            <div className="settings-data-actions">
+              <button className="secondary-button" type="button" disabled={Boolean(dataAction)} onClick={() => {
+                setDataError(undefined);
+                setDataAction("export");
+                void onExportData().catch(() => setDataError("导出失败，请检查浏览器的下载权限。")).finally(() => setDataAction(undefined));
+              }}><Download size={16} />{dataAction === "export" ? "正在导出…" : "导出 .zj"}</button>
+              <button className="secondary-button" type="button" disabled={Boolean(dataAction)} onClick={() => importInputRef.current?.click()}><UploadCloud size={16} />{dataAction === "import" ? "正在读取…" : "导入 .zj"}</button>
+              <input
+                ref={importInputRef}
+                className="visually-hidden"
+                type="file"
+                accept=".zj,application/octet-stream"
+                aria-label="选择班阵 .zj 备份文件"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (!file) return;
+                  setDataError(undefined);
+                  setDataAction("import");
+                  void onImportData(file).catch((error) => setDataError(error instanceof Error ? error.message : "导入失败，请检查备份文件。")).finally(() => setDataAction(undefined));
+                }}
+              />
+            </div>
+            {dataError && <p className="settings-data-error" role="alert">{dataError}</p>}
+          </div>
         </div>
         <footer className="modal-footer"><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="primary-button" type="button" onClick={() => onSave(draft)}>保存偏好</button></footer>
       </section>
