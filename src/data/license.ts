@@ -1,5 +1,9 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { hashes as ed25519Hashes, verify as verifyEd25519 } from "@noble/ed25519";
+import { sha256, sha512 } from "@noble/hashes/sha2.js";
 import LICENSE_PUBLIC_KEY_PEM from "../../src-tauri/license_public_key.pem?raw";
+
+ed25519Hashes.sha512 = sha512;
 
 export type LicenseState = "checking" | "licensed" | "missing" | "invalid" | "expired" | "misconfigured";
 
@@ -38,7 +42,7 @@ export async function readLicenseStatus(): Promise<LicenseStatus> {
   if (isTauri()) return invoke<LicenseStatus>("get_license_status");
   const content = window.localStorage.getItem("banzhen-offline-license-v1");
   if (!content) return basicStatus("missing", "尚未导入班阵离线授权文件");
-  return verifyBrowserLicense(content);
+  return verifyLicenseContent(content);
 }
 
 export async function importLicenseFile(file: File): Promise<LicenseStatus> {
@@ -53,7 +57,7 @@ export async function importLicenseFile(file: File): Promise<LicenseStatus> {
   }
   const content = await file.text();
   if (isTauri()) return invoke<LicenseStatus>("install_license", { content });
-  const status = await verifyBrowserLicense(content);
+  const status = await verifyLicenseContent(content);
   if (status.state === "licensed") {
     window.localStorage.setItem("banzhen-offline-license-v1", content);
   }
@@ -139,15 +143,19 @@ function canonicalLicense(claims: BrowserLicenseClaims) {
 }
 
 function decodeBase64(value: string): Uint8Array<ArrayBuffer> {
-  const decoded = window.atob(value);
+  const decoded = globalThis.atob(value);
   const bytes = new Uint8Array(decoded.length);
   for (let index = 0; index < decoded.length; index += 1) bytes[index] = decoded.charCodeAt(index);
   return bytes;
 }
 
-function publicKeyBytes() {
-  const base64 = LICENSE_PUBLIC_KEY_PEM.replace(/-----BEGIN PUBLIC KEY-----|-----END PUBLIC KEY-----|\s/g, "");
-  return decodeBase64(base64);
+function publicKeyBytes(publicKeyPem: string) {
+  const base64 = publicKeyPem.replace(/-----BEGIN PUBLIC KEY-----|-----END PUBLIC KEY-----|\s/g, "");
+  const spki = decodeBase64(base64);
+  // Ed25519 SubjectPublicKeyInfo consists of a 12-byte ASN.1 prefix and a
+  // 32-byte raw public key. Noble verifies the raw RFC 8032 key bytes.
+  if (spki.length !== 44) throw new Error("授权公钥格式不正确");
+  return spki.slice(12);
 }
 
 function validIsoDate(value: string) {
@@ -172,18 +180,21 @@ function licensedStatus(claims: BrowserLicenseClaims, verificationCode: string, 
   };
 }
 
-async function shortVerificationCode(canonical: Uint8Array, signature: Uint8Array) {
+function shortVerificationCode(canonical: Uint8Array, signature: Uint8Array) {
   const joined = new Uint8Array(canonical.length + signature.length);
   joined.set(canonical);
   joined.set(signature, canonical.length);
-  const digest = new Uint8Array(await window.crypto.subtle.digest("SHA-256", joined));
+  const digest = sha256(joined);
   return [...digest.slice(0, 6)]
     .map((byte) => byte.toString(16).padStart(2, "0").toUpperCase())
     .join("")
     .match(/.{1,4}/g)?.join("-") ?? "";
 }
 
-async function verifyBrowserLicense(content: string): Promise<LicenseStatus> {
+export async function verifyLicenseContent(
+  content: string,
+  publicKeyPem = LICENSE_PUBLIC_KEY_PEM,
+): Promise<LicenseStatus> {
   if (content.length > 64 * 1024) return basicStatus("invalid", "授权文件过大，无法验证");
   const envelope = parseEnvelope(content);
   if (!envelope) return basicStatus("invalid", "授权文件格式不正确");
@@ -198,17 +209,10 @@ async function verifyBrowserLicense(content: string): Promise<LicenseStatus> {
   }
   if (signature.length !== 64) return basicStatus("invalid", "授权签名长度不正确");
 
-  let publicKey: CryptoKey;
   try {
-    publicKey = await window.crypto.subtle.importKey("spki", publicKeyBytes(), { name: "Ed25519" }, false, ["verify"]);
-  } catch {
-    return basicStatus("misconfigured", "当前环境无法执行 Ed25519 本地验证");
-  }
-
-  try {
-    const valid = await window.crypto.subtle.verify("Ed25519", publicKey, signature, canonical);
+    const valid = verifyEd25519(signature, canonical, publicKeyBytes(publicKeyPem), { zip215: false });
     if (!valid) return basicStatus("invalid", "授权签名验证失败，文件可能已被修改");
-    const code = await shortVerificationCode(canonical, signature);
+    const code = shortVerificationCode(canonical, signature);
     const claims = envelope.license;
     if (claims.schemaVersion !== 1 || claims.product !== "班阵" || claims.productId !== "cn.banzhen.seating") {
       return licensedStatus(claims, code, "invalid", "该授权文件不适用于当前软件");
