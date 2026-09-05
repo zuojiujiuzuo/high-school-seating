@@ -1,5 +1,5 @@
-import type { ProjectState } from "../types";
-import { initialAssignments, students } from "./mockData";
+import type { ProjectState, UiFontSize } from "../types";
+import { EXAMPLE_CLASS_NAME, initialAssignments, students } from "./mockData";
 
 export const PROJECT_STORAGE_KEY = "banzhen-project-v2";
 export const PREFERENCES_STORAGE_KEY = "banzhen-preferences-v1";
@@ -68,7 +68,7 @@ export function saveProjectState(className: string, versionName: string, project
 export function deleteProjectState(className: string, versionName: string) {
   window.localStorage.removeItem(scopedKey(PROJECT_STORAGE_KEY, className, versionName));
   window.localStorage.removeItem(scopedKey(SAVED_AT_STORAGE_KEY, className, versionName));
-  if (className === "高二（3）班" && versionName === "日常换位 · 第4期") {
+  if (className === EXAMPLE_CLASS_NAME && versionName === "日常换位 · 第4期") {
     window.localStorage.removeItem(PROJECT_STORAGE_KEY);
   }
 }
@@ -78,10 +78,10 @@ export function loadSavedAt(className: string, versionName: string) {
   return value ? new Date(value) : undefined;
 }
 
-export function loadProjectState(className = "高二（3）班", versionName = "日常换位 · 第4期"): ProjectState {
+export function loadProjectState(className = EXAMPLE_CLASS_NAME, versionName = "日常换位 · 第4期"): ProjectState {
   try {
     const scoped = window.localStorage.getItem(scopedKey(PROJECT_STORAGE_KEY, className, versionName));
-    const legacy = className === "高二（3）班" && versionName === "日常换位 · 第4期"
+    const legacy = className === EXAMPLE_CLASS_NAME && versionName === "日常换位 · 第4期"
       ? window.localStorage.getItem(PROJECT_STORAGE_KEY)
       : null;
     const raw = scoped ?? legacy;
@@ -112,6 +112,7 @@ export interface Preferences {
   reducedMotion: boolean;
   showShortcutHints: boolean;
   autoLock: boolean;
+  fontSize: UiFontSize;
 }
 
 export function loadPreferences(): Preferences {
@@ -120,9 +121,10 @@ export function loadPreferences(): Preferences {
       reducedMotion: false,
       showShortcutHints: true,
       autoLock: false,
+      fontSize: "auto",
       ...JSON.parse(window.localStorage.getItem(PREFERENCES_STORAGE_KEY) ?? "{}"),
     };
   } catch {
-    return { reducedMotion: false, showShortcutHints: true, autoLock: false };
+    return { reducedMotion: false, showShortcutHints: true, autoLock: false, fontSize: "auto" };
   }
 }

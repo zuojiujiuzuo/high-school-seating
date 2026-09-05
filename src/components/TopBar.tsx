@@ -1,4 +1,5 @@
 import {
+  ALargeSmall,
   Check,
   ChevronDown,
   CircleHelp,
@@ -17,7 +18,7 @@ import {
   UsersRound,
 } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import type { AppTheme } from "../types";
+import type { AppTheme, UiFontSize } from "../types";
 import { BrandIcon } from "./BrandIcon";
 
 interface TopBarProps {
@@ -29,6 +30,7 @@ interface TopBarProps {
   saveStatus: "saved" | "saving" | "error";
   legalAcknowledged: boolean;
   theme: AppTheme;
+  fontSize: UiFontSize;
   canUndo: boolean;
   canRedo: boolean;
   printMode: boolean;
@@ -46,6 +48,7 @@ interface TopBarProps {
   onOpenOnboarding: () => void;
   onOpenLegal: () => void;
   onThemeChange: (theme: AppTheme) => void;
+  onFontSizeChange: (fontSize: UiFontSize) => void;
 }
 
 export function TopBar({
@@ -57,6 +60,7 @@ export function TopBar({
   saveStatus,
   legalAcknowledged,
   theme,
+  fontSize,
   canUndo,
   canRedo,
   printMode,
@@ -74,6 +78,7 @@ export function TopBar({
   onOpenOnboarding,
   onOpenLegal,
   onThemeChange,
+  onFontSizeChange,
 }: TopBarProps) {
   const saveLabel = {
     saved: "本地已保存",
@@ -83,9 +88,12 @@ export function TopBar({
 
   return (
     <header className="topbar">
-      <div className="brand-lockup" aria-label="班阵">
+      <div className="brand-lockup" aria-label="班阵，佐玖小工具 1.0">
         <BrandIcon className="brand-icon" />
-        <span className="brand-wordmark" aria-hidden="true" />
+        <span className="brand-wordmark-stack" aria-hidden="true">
+          <span className="brand-wordmark" />
+          <span className="brand-version">佐玖小工具 1.0</span>
+        </span>
       </div>
 
       <div className="workspace-switchers" data-tour-target="workspaces">
@@ -119,18 +127,18 @@ export function TopBar({
       <div className="topbar-spacer" />
 
       <div className="top-actions" role="toolbar" aria-label="历史记录与视图">
-        <button className="icon-text-button" type="button" disabled={!canUndo} onClick={onUndo}>
+        <button className="icon-text-button" type="button" aria-label="撤销" title="撤销" disabled={!canUndo} onClick={onUndo}>
           <Undo2 size={18} />
-          撤销
+          <span>撤销</span>
         </button>
-        <button className="icon-text-button" type="button" disabled={!canRedo} onClick={onRedo}>
+        <button className="icon-text-button" type="button" aria-label="重做" title="重做" disabled={!canRedo} onClick={onRedo}>
           <Redo2 size={18} />
-          重做
+          <span>重做</span>
         </button>
         <span className="toolbar-divider" />
-        <button className={`icon-text-button ${printMode ? "is-active" : ""}`} type="button" onClick={onTogglePrint}>
+        <button className={`icon-text-button ${printMode ? "is-active" : ""}`} type="button" aria-label={printMode ? "返回编辑" : "纯净视图"} title={printMode ? "返回编辑" : "纯净视图"} onClick={onTogglePrint}>
           <FlipHorizontal2 size={18} />
-          {printMode ? "返回编辑" : "纯净视图"}
+          <span>{printMode ? "返回编辑" : "纯净视图"}</span>
         </button>
         <button className="icon-button" type="button" aria-label="打开新手导览" onClick={onOpenOnboarding}>
           <CircleHelp size={18} />
@@ -144,6 +152,25 @@ export function TopBar({
         <Cloud size={17} />
         <span>{saveLabel}</span>
         <time>{savedAt}</time>
+      </div>
+
+      <div className="font-size-switcher" role="group" aria-label="界面字体大小">
+        <ALargeSmall size={16} aria-hidden="true" />
+        {([
+          ["auto", "自动"],
+          ["standard", "标准"],
+          ["large", "大字"],
+        ] as const).map(([value, label]) => (
+          <button
+            className={fontSize === value ? "is-active" : ""}
+            type="button"
+            aria-pressed={fontSize === value}
+            key={value}
+            onClick={() => onFontSizeChange(value)}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
       <div className="theme-switcher" role="group" aria-label="界面主题">

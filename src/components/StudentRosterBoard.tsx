@@ -21,7 +21,7 @@ const PAGE_SIZE = 13;
 
 function isStudentIncomplete(student: Student) {
   return !student.name.trim()
-    || !student.gender
+    || student.gender === "未填写"
     || !student.className.trim()
     || !student.studentNo?.trim()
     || student.score == null
@@ -29,7 +29,7 @@ function isStudentIncomplete(student: Student) {
 }
 
 function hasRequiredFields(student: Student) {
-  return Boolean(student.name.trim() && student.gender && student.className.trim());
+  return Boolean(student.name.trim() && student.studentNo?.trim());
 }
 
 export function StudentRosterBoard({
@@ -235,7 +235,12 @@ export function StudentRosterBoard({
                   <td>{student.score ?? <span className="missing-value">待补充</span>}</td>
                   <td>{student.height != null ? `${student.height} cm` : <span className="missing-value">待补充</span>}</td>
                   <td>
-                    {student.tags?.length ? <span className="tag">{student.tags[0]}</span> : <span className="muted">—</span>}
+                    {student.tags?.length ? (
+                      <span className="student-table-tags" title={student.tags.join("、")}>
+                        <span className="tag">{student.tags[0]}</span>
+                        {student.tags.length > 1 && <small>+{student.tags.length - 1}</small>}
+                      </span>
+                    ) : <span className="muted">—</span>}
                   </td>
                   <td>
                     <div className="table-row-menu" data-roster-menu>

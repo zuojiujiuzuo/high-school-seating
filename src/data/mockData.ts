@@ -10,11 +10,13 @@ const names = [
   "方祺安", "韩文博", "何思齐", "黄子涵", "叶梓豪", "吴雨彤", "袁知夏", "邵清和",
 ];
 
+export const EXAMPLE_CLASS_NAME = "示例班级";
+
 export const students: Student[] = names.map((name, index) => ({
   id: `student-${index + 1}`,
   name,
   gender: index % 2 === 0 ? "男" : "女",
-  className: "高二（3）班",
+  className: EXAMPLE_CLASS_NAME,
   studentNo: `2026${String(index + 1).padStart(3, "0")}`,
   score: index % 12 === 11 ? undefined : [112, 126, 98, 135, 121, 105, 142, 117][index % 8],
   height: index % 8 === 7 ? undefined : [168, 160, 174, 158, 172, 162, 178, 165][index % 8],
@@ -38,7 +40,9 @@ export const initiallySelectedStudentIds = ["student-9", "student-10", "student-
 export const algorithmOptions = [
   { id: "random", name: "随机排座", note: "单独使用，让每次换位都有新鲜感" },
   { id: "score_spread", name: "成绩均匀", note: "各区域成绩结构更平衡" },
-  { id: "group_balanced", name: "小组均衡", note: "兼顾成绩、性别与组长" },
+  { id: "group_balanced", name: "小组均衡", note: "综合平衡成绩与身高数据" },
   { id: "height", name: "身高模式", note: "低个靠前，高个靠后" },
+  { id: "tag_balanced", name: "标签策略", note: "自动应用系统标签对应的排座规则" },
+  { id: "gender_separated", name: "男女分坐", note: "优先安排同性同桌，人数不均时最少混排" },
   { id: "romance_guard", name: "防早恋模式", note: "分散高关注的异性组合" },
 ] as const satisfies readonly { id: GenerationStrategy; name: string; note: string }[];

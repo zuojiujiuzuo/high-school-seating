@@ -1,7 +1,7 @@
 interface StyledTooltipProps {
   label?: string;
   description: string;
-  side?: "bottom" | "right";
+  side?: "bottom" | "right" | "top";
 }
 
 export function StyledTooltip({

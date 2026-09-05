@@ -9,6 +9,7 @@ import type {
   Student,
 } from "../types";
 import { rearrangeAssignments } from "./rules";
+import { isSystemStudentTag } from "./studentTags";
 
 function seededShuffle<T>(items: T[], seed: number) {
   const result = [...items];
@@ -74,7 +75,8 @@ function arrangeDeskPartners(
     let partnerPenalty = Number.POSITIVE_INFINITY;
     remaining.forEach((candidateId, candidateIndex) => {
       const candidate = studentMap.get(candidateId);
-      const mixedGender = firstStudent?.gender !== candidate?.gender;
+      const hasKnownGenders = firstStudent?.gender !== "未填写" && candidate?.gender !== "未填写";
+      const mixedGender = hasKnownGenders && firstStudent?.gender !== candidate?.gender;
       const separationPenalty = separateGenders && mixedGender ? 10_000 : 0;
       const romancePenalty = romanceGuard && mixedGender
         ? ((firstStudent?.appearance ?? 5) + (candidate?.appearance ?? 5)) * 3
@@ -89,6 +91,98 @@ function arrangeDeskPartners(
     seatIndex += 1;
   }
   return [...result, ...remaining];
+}
+
+function systemTagsForStudent(student?: Student) {
+  return (student?.tags ?? []).filter(isSystemStudentTag);
+}
+
+function systemTagPenalty(
+  order: string[],
+  seats: SeatDefinition[],
+  studentMap: Map<string, Student>,
+  separateGenders: boolean,
+  romanceGuard: boolean,
+) {
+  const regularGroups = [...new Set(seats.filter((seat) => !seat.guardian && seat.group >= 0).map((seat) => seat.group))];
+  const countsByTag = new Map<string, Map<number, number>>();
+  const studentsByDesk = new Map<string, Student[]>();
+  let penalty = 0;
+
+  order.forEach((studentId, index) => {
+    const student = studentMap.get(studentId);
+    const seat = seats[index];
+    if (!student || !seat) return;
+    studentsByDesk.set(seat.deskId, [...(studentsByDesk.get(seat.deskId) ?? []), student]);
+
+    const systemTags = systemTagsForStudent(student);
+    if (!systemTags.length) return;
+    if (seat.guardian || seat.group < 0) penalty += 50_000;
+    if (systemTags.includes("视力关注")) penalty += Math.max(0, seat.row) * 1_000;
+
+    systemTags.filter((tag) => tag === "组长候选" || tag.endsWith("优势")).forEach((tag) => {
+      const groupCounts = countsByTag.get(tag) ?? new Map<number, number>();
+      groupCounts.set(seat.group, (groupCounts.get(seat.group) ?? 0) + 1);
+      countsByTag.set(tag, groupCounts);
+    });
+  });
+
+  countsByTag.forEach((groupCounts) => {
+    regularGroups.forEach((group) => {
+      const count = groupCounts.get(group) ?? 0;
+      penalty += count * count * 200;
+    });
+  });
+
+  studentsByDesk.forEach((deskStudents) => {
+    if (deskStudents.length < 2) return;
+    const [first, second] = deskStudents;
+    const gendersKnown = first.gender !== "未填写" && second.gender !== "未填写";
+    const mixedGender = gendersKnown && first.gender !== second.gender;
+    if (separateGenders && mixedGender) penalty += 100_000;
+    if (romanceGuard && mixedGender) penalty += ((first.appearance ?? 5) + (second.appearance ?? 5)) * 30;
+  });
+
+  return penalty;
+}
+
+function arrangeBySystemTags(
+  studentIds: string[],
+  seats: SeatDefinition[],
+  studentMap: Map<string, Student>,
+  separateGenders: boolean,
+  romanceGuard: boolean,
+) {
+  if (!studentIds.some((id) => systemTagsForStudent(studentMap.get(id)).length)) return studentIds;
+
+  let current = [...studentIds];
+  let currentPenalty = systemTagPenalty(current, seats, studentMap, separateGenders, romanceGuard);
+  const maxPasses = Math.min(studentIds.length, 12);
+
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    let bestPenalty = currentPenalty;
+    let bestSwap: [number, number] | undefined;
+
+    for (let sourceIndex = 0; sourceIndex < current.length; sourceIndex += 1) {
+      if (!systemTagsForStudent(studentMap.get(current[sourceIndex])).length) continue;
+      for (let targetIndex = 0; targetIndex < current.length; targetIndex += 1) {
+        if (sourceIndex === targetIndex) continue;
+        [current[sourceIndex], current[targetIndex]] = [current[targetIndex], current[sourceIndex]];
+        const candidatePenalty = systemTagPenalty(current, seats, studentMap, separateGenders, romanceGuard);
+        [current[sourceIndex], current[targetIndex]] = [current[targetIndex], current[sourceIndex]];
+        if (candidatePenalty < bestPenalty) {
+          bestPenalty = candidatePenalty;
+          bestSwap = [sourceIndex, targetIndex];
+        }
+      }
+    }
+
+    if (!bestSwap) break;
+    [current[bestSwap[0]], current[bestSwap[1]]] = [current[bestSwap[1]], current[bestSwap[0]]];
+    currentPenalty = bestPenalty;
+  }
+
+  return current;
 }
 
 export function createCandidates(
@@ -110,6 +204,7 @@ export function createCandidates(
   const studentMap = new Map(students.map((student) => [student.id, student]));
   const strategies: GenerationStrategy[] = options.strategies.length ? options.strategies : ["random"];
   const strategySet = new Set(strategies);
+  const separateGenders = strategySet.has("gender_separated");
   const metric = (id: string) => {
     const student = studentMap.get(id);
     return (student?.score ?? 110) * weights.score
@@ -148,18 +243,28 @@ export function createCandidates(
       ordered = strategySet.has("height") ? varied : alternateExtremes(varied);
     }
 
-    return arrangeDeskPartners(
+    const partnerArranged = arrangeDeskPartners(
       ordered,
       seats.filter((seat) => !seat.disabled),
       studentMap,
-      options.separateGenders,
+      separateGenders,
       strategySet.has("romance_guard"),
     );
+    return strategySet.has("tag_balanced")
+      ? arrangeBySystemTags(
+        partnerArranged,
+        seats.filter((seat) => !seat.disabled),
+        studentMap,
+        separateGenders,
+        strategySet.has("romance_guard"),
+      )
+      : partnerArranged;
   };
 
-  return [0, 1, 2].map((index) => {
-    const seed = 731 + generation * 211 + index * 97;
-    const ordered = orderForAlgorithm(studentIds, seed, index);
+  return [generation].map(() => {
+    const seed = 731 + generation * 211;
+    const variant = Math.abs(generation - 1) % 3;
+    const ordered = orderForAlgorithm(studentIds, seed, variant);
     const nextAssignments = seatIds.reduce<AssignmentMap>((result, seatId, seatIndex) => {
       if (ordered[seatIndex]) result[seatId] = ordered[seatIndex];
       return result;
@@ -169,16 +274,16 @@ export function createCandidates(
     const average = values.reduce((sum, value) => sum + value, 0) / Math.max(values.length, 1);
     const spread = values.reduce((sum, value) => sum + Math.abs(value - average), 0) / Math.max(values.length, 1);
     const balanceScore = Math.max(0, Math.round(100 - spread / Math.max(average, 1) * 100));
-    const score = Math.max(0, Math.min(99, 84 + index * 3 + Math.round(balanceScore / 10) - constrained.violationCount * 12));
+    const score = Math.max(0, Math.min(99, 84 + Math.round(balanceScore / 10) - constrained.violationCount * 12));
     return {
-      id: `candidate-${generation}-${index}`,
-      label: `方案 ${String.fromCharCode(65 + index)}`,
+      id: `candidate-${generation}`,
+      label: "方案",
       score,
       assignments: constrained.assignments,
       metrics: {
         algorithm: strategies.join(" + "),
         strategies: [...strategies],
-        separateGenders: options.separateGenders,
+        separateGenders,
         hardRuleViolations: constrained.violationCount,
         balanceScore,
       },

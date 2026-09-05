@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Check, ListChecks, MousePointer2, PanelsTopLeft, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, MousePointer2, PanelsTopLeft, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 interface OnboardingTourProps {
@@ -16,22 +16,22 @@ const tourSteps = [
     tip: "选择器右侧的小箭头会打开班阵自己的主题菜单。",
   },
   {
-    target: "workflow",
-    placement: "below" as const,
-    icon: ListChecks,
-    eyebrow: "四步流程",
-    title: "照着四步走，不会漏掉关键设置",
-    description: "从名单开始，依次完成布局、排座和导出。规则设置与方案生成已合并在排座页，你可以随时返回修改。",
-    tip: "首次使用建议从“名单”开始检查学生信息。",
+    target: "roster-import",
+    placement: "right" as const,
+    icon: Upload,
+    eyebrow: "快速开始",
+    title: "从待入座名单导入学生",
+    description: "导入名单后即可在排座工作区拖动换座，并使用右侧面板设置规则、生成方案。",
+    tip: "导入窗口内提供标准 Excel 模板下载。",
   },
   {
-    target: "tools",
+    target: "seating-canvas",
     placement: "right" as const,
     icon: MousePointer2,
-    eyebrow: "画布工具",
-    title: "选中、拖动和调整都在这里",
-    description: "左侧工具栏控制画布操作；学生可从名单拖入座位。出错时可用顶部的撤销和重做，所有数据会自动保存在本机。",
-    tip: "之后可点击右上角的问号，再次打开这份导览。",
+    eyebrow: "排座画布",
+    title: "拖动姓名签即可调整座位",
+    description: "左侧是待入座名单，中间是座位画布，右侧可以设置规则并生成方案；不满意时再次生成即可。",
+    tip: "顶部的撤销和重做可以恢复最近操作。",
   },
 ];
 

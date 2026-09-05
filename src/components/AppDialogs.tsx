@@ -1,7 +1,8 @@
-import { Check, Copy, Eraser, Info, Layers3, ListChecks, ListRestart, LockKeyhole, School, SlidersHorizontal, Trash2, UserRoundPlus, UsersRound, X } from "lucide-react";
+import { Check, Copy, Eraser, Layers3, ListChecks, ListRestart, LockKeyhole, School, SlidersHorizontal, Trash2, UserRoundPlus, UsersRound, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ruleLabels } from "../domain/rules";
-import type { GenerationWeights, LayoutConfig, SeatingCandidate, SeatingConstraint, Student } from "../types";
+import { isSystemStudentTag, systemStudentTagGroups } from "../domain/studentTags";
+import type { LayoutConfig, SeatingCandidate, SeatingConstraint, Student } from "../types";
 
 interface DialogFrameProps {
   eyebrow: string;
@@ -74,6 +75,14 @@ interface StudentEditorDialogProps {
   onSave: (student: Student) => void;
 }
 
+function parseStudentTags(value: string) {
+  return value.split(/[，,、;；]/).map((tag) => tag.trim()).filter(Boolean);
+}
+
+function uniqueStudentTags(tags: readonly string[]) {
+  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+}
+
 export function StudentEditorDialog({ student, defaultClassName, onClose, onSave }: StudentEditorDialogProps) {
   const [draft, setDraft] = useState<Student>(() => student ?? {
     id: "",
@@ -85,7 +94,24 @@ export function StudentEditorDialog({ student, defaultClassName, onClose, onSave
     height: undefined,
     tags: [],
   });
+  const [tagInput, setTagInput] = useState("");
   const [errors, setErrors] = useState<Partial<Record<"name" | "gender" | "className", string>>>({});
+
+  const toggleTag = (tag: string) => {
+    setDraft((current) => ({
+      ...current,
+      tags: current.tags?.includes(tag)
+        ? current.tags.filter((item) => item !== tag)
+        : uniqueStudentTags([...(current.tags ?? []), tag]),
+    }));
+  };
+
+  const addCustomTags = () => {
+    const tags = parseStudentTags(tagInput);
+    if (!tags.length) return;
+    setDraft((current) => ({ ...current, tags: uniqueStudentTags([...(current.tags ?? []), ...tags]) }));
+    setTagInput("");
+  };
 
   const clearFieldError = (field: "name" | "gender" | "className") => {
     setErrors((current) => {
@@ -100,7 +126,7 @@ export function StudentEditorDialog({ student, defaultClassName, onClose, onSave
     event.preventDefault();
     const nextErrors: typeof errors = {};
     if (!draft.name.trim()) nextErrors.name = "请输入学生姓名";
-    if (!draft.gender) nextErrors.gender = "请选择学生性别";
+    if (!draft.gender || draft.gender === "未填写") nextErrors.gender = "请选择学生性别";
     if (!draft.className.trim()) nextErrors.className = "请输入班级名称";
     setErrors(nextErrors);
     const firstInvalidField = (["name", "gender", "className"] as const).find((field) => nextErrors[field]);
@@ -113,9 +139,11 @@ export function StudentEditorDialog({ student, defaultClassName, onClose, onSave
       name: draft.name.trim(),
       className: draft.className.trim(),
       studentNo: draft.studentNo?.trim() || undefined,
-      tags: draft.tags?.filter(Boolean),
+      tags: uniqueStudentTags([...(draft.tags ?? []), ...parseStudentTags(tagInput)]),
     });
   };
+
+  const customTags = (draft.tags ?? []).filter((tag) => !isSystemStudentTag(tag));
 
   return (
     <DialogFrame
@@ -135,7 +163,7 @@ export function StudentEditorDialog({ student, defaultClassName, onClose, onSave
           </label>
           <label>
             <span>性别 *</span>
-            <select id="student-gender" name="gender" value={draft.gender} aria-invalid={Boolean(errors.gender)} aria-describedby={errors.gender ? "student-gender-error" : undefined} onChange={(event) => { setDraft((current) => ({ ...current, gender: event.target.value as Student["gender"] })); clearFieldError("gender"); }}><option value="男">男</option><option value="女">女</option></select>
+            <select id="student-gender" name="gender" value={draft.gender} aria-invalid={Boolean(errors.gender)} aria-describedby={errors.gender ? "student-gender-error" : undefined} onChange={(event) => { setDraft((current) => ({ ...current, gender: event.target.value as Student["gender"] })); clearFieldError("gender"); }}>{draft.gender === "未填写" && <option value="未填写" disabled>未填写（请选择）</option>}<option value="男">男</option><option value="女">女</option></select>
             {errors.gender && <small className="field-error" id="student-gender-error">{errors.gender}</small>}
           </label>
           <label>
@@ -146,7 +174,62 @@ export function StudentEditorDialog({ student, defaultClassName, onClose, onSave
           <label><span>学号<small className="field-label-note">（选填）</small></span><input name="studentNo" value={draft.studentNo ?? ""} onChange={(event) => setDraft((current) => ({ ...current, studentNo: event.target.value }))} /></label>
           <label><span>成绩<small className="field-label-note">（选填）</small></span><input name="score" min="0" max="750" type="number" value={draft.score ?? ""} onChange={(event) => setDraft((current) => ({ ...current, score: event.target.value ? Number(event.target.value) : undefined }))} /></label>
           <label><span>身高（cm）<small className="field-label-note">（选填）</small></span><input name="height" min="100" max="220" type="number" value={draft.height ?? ""} onChange={(event) => setDraft((current) => ({ ...current, height: event.target.value ? Number(event.target.value) : undefined }))} /></label>
-          <label className="span-two"><span>标签<small className="field-label-note">（选填）</small></span><input name="tags" placeholder="例如：组长候选" value={draft.tags?.[0] ?? ""} onChange={(event) => setDraft((current) => ({ ...current, tags: event.target.value ? [event.target.value] : [] }))} /></label>
+          <fieldset className="student-tag-picker span-two">
+            <legend>标签<small className="field-label-note">（选填，可多选）</small></legend>
+            <div className="student-tag-input-row">
+              <input
+                name="tags"
+                aria-label="输入自定义标签"
+                placeholder="输入自定义标签，多个标签用逗号分隔"
+                value={tagInput}
+                onChange={(event) => setTagInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addCustomTags();
+                  }
+                }}
+              />
+              <button type="button" disabled={!tagInput.trim()} onClick={addCustomTags}>添加</button>
+            </div>
+            <div className="student-tag-groups">
+              {systemStudentTagGroups.map((group) => (
+                <div className="student-tag-group" key={group.label}>
+                  <span>{group.label}</span>
+                  <div>
+                    {group.tags.map((tag) => {
+                      const selected = draft.tags?.includes(tag) ?? false;
+                      return (
+                        <button
+                          className={selected ? "is-selected" : ""}
+                          type="button"
+                          aria-pressed={selected}
+                          key={tag}
+                          onClick={() => toggleTag(tag)}
+                        >
+                          <span className="student-tag-option-mark">{selected && <Check size={12} strokeWidth={2} />}</span>
+                          {tag}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+              {customTags.length > 0 && (
+                <div className="student-tag-group">
+                  <span>自定义</span>
+                  <div>
+                    {customTags.map((tag) => (
+                      <button className="is-selected" type="button" aria-label={`移除标签${tag}`} key={tag} onClick={() => toggleTag(tag)}>
+                        {tag}<X size={12} strokeWidth={2} />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <small className="student-tag-picker-hint" aria-live="polite">已选择 {draft.tags?.length ?? 0} 个标签。系统标签参与标签策略；自定义标签仅用于记录和检索。</small>
+          </fieldset>
         </div>
       </form>
     </DialogFrame>
@@ -205,20 +288,6 @@ export function AdvancedLayoutDialog({ config, aisleWidth, onClose, onSave }: { 
   );
 }
 
-export function CandidateInfoDialog({ candidates, weights, onClose }: { candidates: SeatingCandidate[]; weights: GenerationWeights; onClose: () => void }) {
-  return (
-    <DialogFrame eyebrow="SCORING" title="候选方案评分说明" onClose={onClose} footer={<button className="primary-button" type="button" onClick={onClose}>知道了</button>}>
-      <div className="dialog-intro"><Info size={20} /><span>先扣除未满足的硬规则，再按当前数据权重比较班级分布。</span></div>
-      <div className="score-weight-summary"><span>成绩 {weights.score}%</span><span>身高 {weights.height}%</span><span>综合 {weights.appearance}%</span></div>
-      <div className="candidate-detail-list">
-        {candidates.map((candidate) => (
-          <div key={candidate.id}><strong>{candidate.label}<b>{candidate.score} 分</b></strong><span>平衡度 {candidate.metrics?.balanceScore ?? "—"} · 未满足硬规则 {candidate.metrics?.hardRuleViolations ?? 0} 条</span></div>
-        ))}
-      </div>
-    </DialogFrame>
-  );
-}
-
 export function ApplyCandidateDialog({ candidate, onClose, onConfirm }: {
   candidate: SeatingCandidate;
   onClose: () => void;
@@ -235,7 +304,7 @@ export function ApplyCandidateDialog({ candidate, onClose, onConfirm }: {
       <div className={`apply-candidate-confirmation ${violationCount > 0 ? "has-warning" : ""}`}>
         <span aria-hidden="true"><Check size={22} /></span>
         <div>
-          <strong>{candidate.label} · {candidate.score} 分</strong>
+          <strong>{candidate.label}</strong>
           <p>将当前预览应用为正式座位安排。应用后仍可使用“撤销”恢复。</p>
         </div>
       </div>
@@ -389,6 +458,35 @@ export function ClearClassDialog({ className, versionName, studentCount, onClose
       <div className="clear-class-warning">
         <span aria-hidden="true"><Eraser size={23} /></span>
         <div><strong>将从“{versionName}”移除 {studentCount} 名学生</strong><p>座位安排和规则会同时清空，教室布局会保留。完成后仍可立即使用“撤销”恢复。</p></div>
+      </div>
+    </DialogFrame>
+  );
+}
+
+export function DeleteStudentDialog({ student, relatedRuleCount, relatedStudentCount, onClose, onConfirm }: {
+  student: Student;
+  relatedRuleCount: number;
+  relatedStudentCount: number;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const ruleSummary = relatedRuleCount > 0
+    ? `与 ${relatedStudentCount} 名学生关联的 ${relatedRuleCount} 条排座规则也会一并删除。`
+    : "该学生当前没有关联的排座规则。";
+
+  return (
+    <DialogFrame
+      eyebrow="DELETE STUDENT"
+      title={`删除学生“${student.name}”？`}
+      onClose={onClose}
+      footer={<><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="danger-button" type="button" onClick={onConfirm}><Trash2 size={16} />删除学生</button></>}
+    >
+      <div className="clear-class-warning delete-workspace-warning">
+        <span aria-hidden="true"><Trash2 size={23} /></span>
+        <div>
+          <strong>将从当前班级移除“{student.name}”</strong>
+          <p>该学生的座位安排会同时移除。{ruleSummary}其他学生之间的规则不受影响，完成后可使用“撤销”恢复。</p>
+        </div>
       </div>
     </DialogFrame>
   );

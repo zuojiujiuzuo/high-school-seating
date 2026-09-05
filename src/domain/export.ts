@@ -1,6 +1,6 @@
-import type { AssignmentMap, SeatDefinition, Student } from "../types";
+import type { AssignmentMap, ExportVariant, SeatDefinition, Student } from "../types";
 
-export type SeatingExportFormat = "xlsx" | "svg" | "png" | "pdf" | "pptx";
+export type SeatingExportFormat = "xlsx" | "png" | "pdf";
 
 interface SeatingExportOptions {
   format: SeatingExportFormat;
@@ -16,25 +16,79 @@ interface SeatingExportOptions {
   tableTheme: "paper" | "ink";
   sourceCanvas?: HTMLCanvasElement | null;
   appTheme?: "minimal" | "cute";
+  variant?: ExportVariant;
 }
 
 function safeFileName(value: string) {
   return (value.trim() || "班级座次表").replace(/[\\/:*?"<>|]/g, "-");
 }
 
-function downloadBlob(blob: Blob, fileName: string) {
+interface BrowserWritableFile {
+  write(data: Blob): Promise<void>;
+  close(): Promise<void>;
+}
+
+interface BrowserFileHandle {
+  createWritable(): Promise<BrowserWritableFile>;
+}
+
+interface SaveFilePickerOptions {
+  suggestedName?: string;
+  types?: Array<{
+    description: string;
+    accept: Record<string, string[]>;
+  }>;
+}
+
+type WindowWithSavePicker = Window & {
+  showSaveFilePicker?: (options?: SaveFilePickerOptions) => Promise<BrowserFileHandle>;
+};
+
+function triggerBrowserDownload(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = fileName;
+  anchor.style.display = "none";
+  anchor.rel = "noopener";
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 500);
+  // Firefox and Safari may not start consuming a large Blob immediately. Keep
+  // the object URL alive long enough for the browser download manager to take it.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-function xmlEscape(value: string) {
-  return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[char] ?? char);
+async function saveBlobLocally(blob: Blob, fileName: string) {
+  const showSaveFilePicker = (window as WindowWithSavePicker).showSaveFilePicker;
+
+  // On HTTPS deployments Chromium can write through the native Save dialog.
+  // This avoids browsers treating an async, generated export as an unsolicited
+  // download. HTTP deployments and other browsers use the download fallback.
+  if (window.isSecureContext && showSaveFilePicker) {
+    const extension = fileName.includes(".") ? `.${fileName.split(".").pop()}` : "";
+    try {
+      const handle = await showSaveFilePicker({
+        suggestedName: fileName,
+        types: extension ? [{
+          description: "班阵导出文件",
+          accept: { [blob.type || "application/octet-stream"]: [extension] },
+        }] : undefined,
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error("已取消保存");
+      }
+      // A browser may expose the API but deny it in an embedded page. Falling
+      // back to a normal download still lets the user save the generated file.
+    }
+  }
+
+  triggerBrowserDownload(blob, fileName);
 }
 
 function sortedSeats(seats: SeatDefinition[]) {
@@ -55,7 +109,7 @@ function studentForSeat(seat: SeatDefinition, assignments: AssignmentMap, studen
 }
 
 async function buildWorkbook(options: SeatingExportOptions) {
-  const { Workbook } = await import("exceljs");
+  const { Workbook } = (await import("exceljs")).default;
   const inkTheme = options.tableTheme === "ink";
   const workbook = new Workbook();
   workbook.creator = "班阵";
@@ -99,7 +153,7 @@ async function buildWorkbook(options: SeatingExportOptions) {
       seat.disabled ? "" : student?.name ?? "",
       options.showGender ? student?.gender ?? "" : "",
       options.showStudentNo ? student?.studentNo ?? "" : "",
-      seat.disabled ? "停用" : student ? "已入座" : "空位",
+      seat.disabled ? "停用" : student?.isClassRepresentative ? "已入座（课代表）" : student ? "已入座" : "空位",
     ]);
     row.alignment = { vertical: "middle", horizontal: "center" };
     row.height = 21;
@@ -129,38 +183,193 @@ async function buildWorkbook(options: SeatingExportOptions) {
   return new Blob([buffer as unknown as BlobPart], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
 }
 
-function buildSvg(options: SeatingExportOptions) {
+export async function downloadStudentImportTemplate(className: string) {
+  const { Workbook } = (await import("exceljs")).default;
+  const workbook = new Workbook();
+  workbook.creator = "班阵";
+  const sheet = workbook.addWorksheet("学生名单", { views: [{ state: "frozen", ySplit: 1 }] });
+  sheet.columns = [
+    { header: "姓名", key: "name", width: 16 },
+    { header: "性别", key: "gender", width: 10 },
+    { header: "班级", key: "className", width: 18 },
+    { header: "学号", key: "studentNo", width: 18 },
+    { header: "成绩", key: "score", width: 12 },
+    { header: "身高(cm)", key: "height", width: 14 },
+    { header: "标签", key: "tags", width: 28 },
+  ];
+  sheet.getRow(1).height = 26;
+  sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+  sheet.getRow(1).alignment = { horizontal: "center", vertical: "middle" };
+  sheet.getRow(1).eachCell((cell) => {
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2F6FED" } };
+  });
+  sheet.addRow({ name: "张同学", gender: "男", className, studentNo: "2026001", score: 580, height: 172, tags: "组长候选、体育委员" });
+  sheet.addRow({ name: "李同学", gender: "女", className, studentNo: "2026002", score: 605, height: 165, tags: "视力关注" });
+  sheet.getColumn("gender").eachCell((cell, rowNumber) => {
+    if (rowNumber > 1) cell.dataValidation = { type: "list", allowBlank: true, formulae: ['"男,女"'] };
+  });
+  const note = workbook.addWorksheet("填写说明");
+  note.columns = [{ width: 20 }, { width: 66 }];
+  note.addRows([
+    ["字段", "填写要求"],
+    ["姓名", "必填"],
+    ["性别", "选填；填写时只使用“男”或“女”"],
+    ["班级", `可留空；导入时将使用当前班级“${className}”`],
+    ["学号", "必填；重复学号会更新已有学生"],
+    ["成绩、身高", "选填，只填写数字"],
+    ["标签", "选填；多个标签使用顿号、逗号或分号分隔"],
+  ]);
+  note.getRow(1).font = { bold: true };
+  const buffer = await workbook.xlsx.writeBuffer();
+  await saveBlobLocally(new Blob([buffer as unknown as BlobPart], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `${safeFileName(className)}_学生导入模板.xlsx`);
+  return "导入模板已下载";
+}
+
+function buildCompactCanvas(options: SeatingExportOptions) {
   const seats = sortedSeats(options.seats);
   const classroomSeats = seats.filter((seat) => !seat.guardian);
   const guardianSeats = seats.filter((seat) => seat.guardian);
   const studentMap = new Map(options.students.map((student) => [student.id, student]));
   const groups = [...new Set(classroomSeats.map((seat) => seat.group))];
-  const groupWidth = 188;
-  const seatWidth = 76;
-  const seatHeight = 42;
-  const rowGap = 10;
-  const groupGap = 28;
-  const margin = 48;
   const maxRows = Math.max(1, ...classroomSeats.map((seat) => seat.row + 1));
-  const width = Math.max(760, margin * 2 + groups.length * groupWidth + Math.max(0, groups.length - 1) * groupGap);
-  const height = 170 + maxRows * (seatHeight + rowGap) + 70;
-  const seatNodes = groups.flatMap((group, groupIndex) => classroomSeats.filter((seat) => seat.group === group).map((seat) => {
-    const x = margin + groupIndex * (groupWidth + groupGap) + seat.column * (seatWidth + 8);
-    const y = 156 + seat.row * (seatHeight + rowGap);
+  const canvas = document.createElement("canvas");
+  canvas.width = 1800;
+  canvas.height = Math.max(1120, 330 + maxRows * 118);
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("当前环境不支持精简版导出");
+
+  const margin = 92;
+  const contentWidth = canvas.width - margin * 2;
+  const groupGap = 34;
+  const groupWidth = groups.length
+    ? (contentWidth - Math.max(0, groups.length - 1) * groupGap) / groups.length
+    : contentWidth;
+  const gridTop = 294;
+  const rowHeight = 96;
+  const rowGap = 18;
+  const ink = "#202124";
+  const muted = "#6b6e73";
+  const line = "#aeb2b8";
+  const disabledFill = "#f1f2f3";
+  const representativeFill = "#c98118";
+
+  const drawRepresentativeBadge = (student: Student | undefined, x: number, y: number) => {
+    if (!student?.isClassRepresentative) return;
+    context.beginPath();
+    context.arc(x, y, 14, 0, Math.PI * 2);
+    context.fillStyle = representativeFill;
+    context.fill();
+    context.lineWidth = 2;
+    context.strokeStyle = "#ffffff";
+    context.stroke();
+    context.fillStyle = "#ffffff";
+    context.textAlign = "center";
+    context.font = '700 15px "Microsoft YaHei", "PingFang SC", sans-serif';
+    context.fillText("课", x, y + 1);
+  };
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = ink;
+  context.textBaseline = "middle";
+  context.font = '700 48px "Microsoft YaHei", "PingFang SC", sans-serif';
+  context.fillText(`${options.className}座次表`, margin, 72);
+  context.fillStyle = muted;
+  context.font = '400 24px "Microsoft YaHei", "PingFang SC", sans-serif';
+  context.textAlign = "right";
+  context.fillText(options.versionName, canvas.width - margin, 72);
+  context.strokeStyle = ink;
+  context.lineWidth = 3;
+  context.beginPath();
+  context.moveTo(margin, 112);
+  context.lineTo(canvas.width - margin, 112);
+  context.stroke();
+
+  const podiumWidth = 230;
+  const podiumHeight = 70;
+  const podiumX = (canvas.width - podiumWidth) / 2;
+  const podiumY = 146;
+  context.lineWidth = 2.5;
+  context.strokeStyle = ink;
+  context.fillStyle = "#ffffff";
+  context.beginPath();
+  context.roundRect(podiumX, podiumY, podiumWidth, podiumHeight, 8);
+  context.fill();
+  context.stroke();
+  context.fillStyle = ink;
+  context.textAlign = "center";
+  context.font = '700 30px "Microsoft YaHei", "PingFang SC", sans-serif';
+  context.fillText("讲台", canvas.width / 2, podiumY + podiumHeight / 2);
+
+  guardianSeats.forEach((seat) => {
+    const width = 160;
+    const x = seat.guardian === "left" ? podiumX - width - 30 : podiumX + podiumWidth + 30;
     const student = studentForSeat(seat, options.assignments, studentMap);
-    const detail = seat.disabled
-      ? ""
-      : [options.showGender ? student?.gender : "", options.showStudentNo ? student?.studentNo?.slice(-3) : ""].filter(Boolean).join(" · ");
-    return `<g><rect x="${x}" y="${y}" width="${seatWidth}" height="${seatHeight}" rx="5" fill="${seat.disabled ? "#e9e8e4" : "#fffdf8"}" stroke="${seat.disabled ? "#c5c3bd" : "#aaa79f"}"/><text x="${x + seatWidth / 2}" y="${seat.disabled ? y + 26 : y + 18}" text-anchor="middle" font-size="${seat.disabled ? 13 : 12}" font-weight="${seat.disabled ? 600 : 700}" fill="${seat.disabled ? "#777670" : "#242521"}">${xmlEscape(seat.disabled ? "×" : student?.name ?? "空位")}</text>${detail ? `<text x="${x + seatWidth / 2}" y="${y + 33}" text-anchor="middle" font-size="9" fill="#6d6c66">${xmlEscape(detail)}</text>` : ""}</g>`;
-  })).join("");
-  const guardianNodes = guardianSeats.map((seat) => {
-    const x = seat.guardian === "left" ? width / 2 - 55 - 18 - seatWidth : width / 2 + 55 + 18;
-    const student = studentForSeat(seat, options.assignments, studentMap);
-    const label = seat.guardian === "left" ? "左护法" : "右护法";
-    const content = seat.disabled ? "×" : student?.name ?? "空位";
-    return `<g><text x="${x + seatWidth / 2}" y="96" text-anchor="middle" font-size="9" font-weight="700" fill="#2f6fed">${label}</text><rect x="${x}" y="100" width="${seatWidth}" height="${seatHeight}" rx="5" fill="${seat.disabled ? "#e9e8e4" : "#eaf1ff"}" stroke="${seat.disabled ? "#c5c3bd" : "#2f6fed"}"/><text x="${x + seatWidth / 2}" y="126" text-anchor="middle" font-size="12" font-weight="700" fill="#242521">${xmlEscape(content)}</text></g>`;
-  }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#f8f5ed"/><text x="${margin}" y="44" font-size="13" fill="#6d6c66">${xmlEscape(options.versionName)}</text><text x="${margin}" y="78" font-size="26" font-weight="700" fill="#242521">${xmlEscape(options.className)}座次表</text><rect x="${width / 2 - 55}" y="100" width="110" height="34" rx="5" fill="#fffdf8" stroke="#242521"/><text x="${width / 2}" y="122" text-anchor="middle" font-size="13" font-weight="700">讲台</text>${guardianNodes}${seatNodes}<text x="${margin}" y="${height - 28}" font-size="10" fill="#6d6c66">班阵 · 本地生成</text></svg>`;
+    context.fillStyle = seat.disabled ? disabledFill : "#ffffff";
+    context.strokeStyle = line;
+    context.lineWidth = 2;
+    context.beginPath();
+    context.roundRect(x, podiumY, width, podiumHeight, 8);
+    context.fill();
+    context.stroke();
+    context.fillStyle = ink;
+    context.font = '600 25px "Microsoft YaHei", "PingFang SC", sans-serif';
+    context.fillText(seat.disabled ? "×" : student?.name ?? "空位", x + width / 2, podiumY + 30);
+    if (!seat.disabled) drawRepresentativeBadge(student, x + 17, podiumY + 17);
+    context.fillStyle = muted;
+    context.font = '500 17px "Microsoft YaHei", "PingFang SC", sans-serif';
+    context.fillText(seat.guardian === "left" ? "左护法" : "右护法", x + width / 2, podiumY + 55);
+  });
+
+  groups.forEach((group, groupIndex) => {
+    const groupSeats = classroomSeats.filter((seat) => seat.group === group);
+    const columnCount = Math.max(1, ...groupSeats.map((seat) => seat.column + 1));
+    const left = margin + groupIndex * (groupWidth + groupGap);
+    const seatGap = 10;
+    const seatWidth = (groupWidth - Math.max(0, columnCount - 1) * seatGap) / columnCount;
+    context.fillStyle = muted;
+    context.textAlign = "left";
+    context.font = '600 21px "Microsoft YaHei", "PingFang SC", sans-serif';
+    context.fillText(`第 ${group + 1} 大组`, left, gridTop - 30);
+    if (options.showGroupBoundaries) {
+      context.strokeStyle = "#d0d3d7";
+      context.lineWidth = 2;
+      context.setLineDash([10, 8]);
+      context.strokeRect(left - 10, gridTop - 6, groupWidth + 20, maxRows * (rowHeight + rowGap) - rowGap + 12);
+      context.setLineDash([]);
+    }
+    groupSeats.forEach((seat) => {
+      const x = left + seat.column * (seatWidth + seatGap);
+      const y = gridTop + seat.row * (rowHeight + rowGap);
+      const student = studentForSeat(seat, options.assignments, studentMap);
+      context.fillStyle = seat.disabled ? disabledFill : "#ffffff";
+      context.strokeStyle = seat.disabled ? "#c9ccd0" : ink;
+      context.lineWidth = seat.disabled ? 2 : 2.4;
+      context.beginPath();
+      context.roundRect(x, y, seatWidth, rowHeight, 8);
+      context.fill();
+      context.stroke();
+      context.textAlign = "center";
+      context.fillStyle = seat.disabled ? muted : ink;
+      context.font = `700 ${seatWidth < 120 ? 24 : 29}px "Microsoft YaHei", "PingFang SC", sans-serif`;
+      context.fillText(seat.disabled ? "×" : student?.name ?? "空位", x + seatWidth / 2, y + (student ? 38 : rowHeight / 2));
+      if (!seat.disabled) drawRepresentativeBadge(student, x + 17, y + 17);
+      if (student) {
+        const detail = [options.showGender ? student.gender : "", options.showStudentNo ? student.studentNo?.slice(-3) : ""].filter(Boolean).join(" · ");
+        if (detail) {
+          context.fillStyle = muted;
+          context.font = '500 17px "Microsoft YaHei", "PingFang SC", sans-serif';
+          context.fillText(detail, x + seatWidth / 2, y + 70);
+        }
+      }
+    });
+  });
+
+  context.fillStyle = muted;
+  context.textAlign = "left";
+  context.font = '400 17px "Microsoft YaHei", "PingFang SC", sans-serif';
+  context.fillText("班阵 · 精简版", margin, canvas.height - 38);
+  return canvas;
 }
 
 function drawCuteBackdrop(context: CanvasRenderingContext2D, width: number, height: number, scale: number) {
@@ -222,117 +431,84 @@ function createCanvasSnapshot(source: HTMLCanvasElement, theme: "minimal" | "cut
   return canvas;
 }
 
-function canvasToBlob(canvas: HTMLCanvasElement, type = "image/png") {
+function canvasToBlob(canvas: HTMLCanvasElement, type = "image/png", quality?: number) {
   return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("无法生成画面文件")), type);
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("无法生成画面文件")), type, quality);
   });
 }
 
-function buildSnapshotSvg(canvas: HTMLCanvasElement) {
-  const image = canvas.toDataURL("image/png");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}" viewBox="0 0 ${canvas.width} ${canvas.height}"><image width="100%" height="100%" href="${image}"/></svg>`;
+function joinBytes(chunks: ReadonlyArray<Uint8Array<ArrayBufferLike>>) {
+  const result = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
+  let offset = 0;
+  chunks.forEach((chunk) => {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  });
+  return result;
 }
 
-async function buildPresentation(options: SeatingExportOptions, snapshot: HTMLCanvasElement) {
-  const { default: PptxGenJS } = await import("pptxgenjs");
-  const presentation = new PptxGenJS();
-  presentation.layout = "LAYOUT_WIDE";
-  presentation.author = "班阵";
-  presentation.subject = options.versionName;
-  presentation.title = `${options.className}座次表`;
-  presentation.company = "班阵";
-  const slide = presentation.addSlide();
-  slide.background = { color: options.appTheme === "cute" ? "FFF8FA" : "F8F5ED" };
-  slide.addText(`${options.className}座次表`, {
-    x: 0.45,
-    y: 0.18,
-    w: 7.2,
-    h: 0.35,
-    fontFace: "Microsoft YaHei",
-    fontSize: 20,
-    bold: true,
-    color: options.appTheme === "cute" ? "3B3034" : "242521",
-    margin: 0,
+async function canvasToPdfBlob(canvas: HTMLCanvasElement) {
+  const jpeg = new Uint8Array(await (await canvasToBlob(canvas, "image/jpeg", 0.94)).arrayBuffer());
+  const encoder = new TextEncoder();
+  const encode = (value: string) => encoder.encode(value);
+  const pageWidth = 841.89;
+  const pageHeight = 595.28;
+  const margin = 22.68;
+  const availableWidth = pageWidth - margin * 2;
+  const availableHeight = pageHeight - margin * 2;
+  const scale = Math.min(availableWidth / canvas.width, availableHeight / canvas.height);
+  const imageWidth = canvas.width * scale;
+  const imageHeight = canvas.height * scale;
+  const imageX = (pageWidth - imageWidth) / 2;
+  const imageY = (pageHeight - imageHeight) / 2;
+  const number = (value: number) => value.toFixed(3).replace(/\.?0+$/, "");
+  const content = `q\n${number(imageWidth)} 0 0 ${number(imageHeight)} ${number(imageX)} ${number(imageY)} cm\n/Im0 Do\nQ\n`;
+  const objects: Uint8Array[][] = [
+    [encode("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")],
+    [encode("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")],
+    [encode(`3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${number(pageWidth)} ${number(pageHeight)}] /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>\nendobj\n`)],
+    [encode(`4 0 obj\n<< /Length ${encode(content).length} >>\nstream\n${content}endstream\nendobj\n`)],
+    [
+      encode(`5 0 obj\n<< /Type /XObject /Subtype /Image /Width ${canvas.width} /Height ${canvas.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >>\nstream\n`),
+      jpeg,
+      encode("\nendstream\nendobj\n"),
+    ],
+  ];
+  const chunks: Uint8Array<ArrayBufferLike>[] = [encode("%PDF-1.4\n%\u00e2\u00e3\u00cf\u00d3\n")];
+  const offsets = [0];
+  let byteLength = chunks[0].length;
+  objects.forEach((object) => {
+    offsets.push(byteLength);
+    object.forEach((chunk) => {
+      chunks.push(chunk);
+      byteLength += chunk.length;
+    });
   });
-  slide.addText(options.versionName, {
-    x: 8.2,
-    y: 0.23,
-    w: 4.65,
-    h: 0.24,
-    fontFace: "Microsoft YaHei",
-    fontSize: 9,
-    color: options.appTheme === "cute" ? "826D75" : "6D6C66",
-    align: "right",
-    margin: 0,
-  });
-  const maxWidth = 12.45;
-  const maxHeight = 6.48;
-  const ratio = snapshot.width / snapshot.height;
-  const width = Math.min(maxWidth, maxHeight * ratio);
-  const height = width / ratio;
-  slide.addImage({
-    data: snapshot.toDataURL("image/png"),
-    x: (13.333 - width) / 2,
-    y: 0.72 + (maxHeight - height) / 2,
-    w: width,
-    h: height,
-  });
-  slide.addText("班阵 · 本地生成", { x: 0.45, y: 7.2, w: 3, h: 0.16, fontSize: 7, color: "8B8982", margin: 0 });
-  const output = await presentation.write({ outputType: "blob", compression: true });
-  return output instanceof Blob
-    ? output
-    : new Blob([output as BlobPart], { type: "application/vnd.openxmlformats-officedocument.presentationml.presentation" });
-}
-
-function printSnapshot(canvas: HTMLCanvasElement, title: string) {
-  const frame = document.createElement("iframe");
-  frame.title = "座次画面打印";
-  frame.style.position = "fixed";
-  frame.style.width = "0";
-  frame.style.height = "0";
-  frame.style.border = "0";
-  frame.style.opacity = "0";
-  document.body.appendChild(frame);
-  const target = frame.contentWindow;
-  if (!target) {
-    frame.remove();
-    throw new Error("无法打开打印窗口");
-  }
-  const image = canvas.toDataURL("image/png");
-  target.document.open();
-  target.document.write(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${xmlEscape(title)}</title><style>@page{size:landscape;margin:8mm}html,body{height:100%;margin:0}body{display:grid;place-items:center}img{display:block;max-width:100%;max-height:100%;object-fit:contain}</style></head><body><img src="${image}" alt="座次画面"></body></html>`);
-  target.document.close();
-  window.setTimeout(() => {
-    target.focus();
-    target.print();
-  }, 180);
-  window.setTimeout(() => frame.remove(), 60_000);
+  const xrefOffset = byteLength;
+  const xrefEntries = offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  chunks.push(encode(`xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${xrefEntries}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`));
+  return new Blob([joinBytes(chunks) as BlobPart], { type: "application/pdf" });
 }
 
 export async function exportSeatingPlan(options: SeatingExportOptions) {
   const fileName = safeFileName(options.fileName);
   if (options.format === "xlsx") {
-    downloadBlob(await buildWorkbook(options), `${fileName}.xlsx`);
+    await saveBlobLocally(await buildWorkbook(options), `${fileName}.xlsx`);
     return "已导出 Excel 工作簿";
   }
-  const snapshot = options.sourceCanvas
-    ? createCanvasSnapshot(options.sourceCanvas, options.appTheme ?? "minimal")
-    : undefined;
-  if (options.format === "svg") {
-    downloadBlob(new Blob([snapshot ? buildSnapshotSvg(snapshot) : buildSvg(options)], { type: "image/svg+xml;charset=utf-8" }), `${fileName}.svg`);
-    return "当前画面已导出为 SVG";
-  }
+  const variant = options.variant ?? "standard";
+  const snapshot = variant === "compact"
+    ? buildCompactCanvas(options)
+    : options.sourceCanvas
+      ? createCanvasSnapshot(options.sourceCanvas, options.appTheme ?? "minimal")
+      : undefined;
+  const outputName = `${fileName}_${variant === "compact" ? "精简版" : "普通版"}`;
   if (options.format === "png") {
     if (!snapshot) throw new Error("画布正在准备，请稍后再导出");
-    downloadBlob(await canvasToBlob(snapshot), `${fileName}.png`);
-    return "当前画面已导出为高清 PNG";
-  }
-  if (options.format === "pdf") {
-    if (!snapshot) throw new Error("画布正在准备，请稍后再导出");
-    printSnapshot(snapshot, fileName);
-    return "已打开当前画面的打印窗口，可另存为 PDF";
+    await saveBlobLocally(await canvasToBlob(snapshot), `${outputName}.png`);
+    return `已导出${variant === "compact" ? "精简版" : "普通版"} PNG`;
   }
   if (!snapshot) throw new Error("画布正在准备，请稍后再导出");
-  downloadBlob(await buildPresentation(options, snapshot), `${fileName}.pptx`);
-  return "已导出包含当前画面的 PowerPoint";
+  await saveBlobLocally(await canvasToPdfBlob(snapshot), `${outputName}.pdf`);
+  return `已导出${variant === "compact" ? "精简版" : "普通版"} PDF`;
 }

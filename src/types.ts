@@ -1,10 +1,11 @@
-export type Gender = "男" | "女";
+export type Gender = "男" | "女" | "未填写";
 
 export interface Student {
   id: string;
   name: string;
   gender: Gender;
   className: string;
+  isClassRepresentative?: boolean;
   studentNo?: string;
   score?: number;
   height?: number;
@@ -79,6 +80,10 @@ export type GuardianSide = "left" | "right";
 
 export type AppTheme = "minimal" | "cute";
 
+export type UiFontSize = "auto" | "standard" | "large";
+
+export type ExportVariant = "standard" | "compact";
+
 export interface LayoutConfig {
   groups: number;
   rows: number;
@@ -96,11 +101,12 @@ export type GenerationStrategy =
   | "score_spread"
   | "group_balanced"
   | "height"
+  | "tag_balanced"
+  | "gender_separated"
   | "romance_guard";
 
 export interface GenerationOptions {
   strategies: GenerationStrategy[];
-  separateGenders: boolean;
 }
 
 export interface SeatingCandidate {

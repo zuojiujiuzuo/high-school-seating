@@ -1,4 +1,4 @@
-import { Eye, Maximize2, Minus, MousePointer2, Plus, Undo2, UsersRound } from "lucide-react";
+import { BadgeCheck, Eye, Maximize2, Minus, MousePointer2, Plus, Undo2, UsersRound } from "lucide-react";
 import {
   Application,
   Container,
@@ -22,10 +22,13 @@ import type {
   Student,
   StudentPair,
 } from "../types";
+import { StyledTooltip } from "./StyledTooltip";
+import { StudentQuickTags } from "./StudentQuickTags";
 import { toolDetails, type ToolMode } from "./ToolRail";
 
 const LOGICAL_WIDTH = 1120;
 const LOGICAL_HEIGHT = 720;
+const TOOL_HINT_DURATION_MS = 10_000;
 const COLORS = {
   ink: 0x242521,
   paper: 0xfffdf8,
@@ -142,6 +145,9 @@ interface ClassroomCanvasProps {
   onMovePodium: (position: CanvasPoint) => void;
   onToolFeedback: (message: string) => void;
   onToggleSeatDisabled: (seatId: string) => void;
+  onToggleClassRepresentative: (studentId: string) => void;
+  onAddStudentTag: (studentId: string, tag: string) => void;
+  onToggleGuardianSeat: (side: "left" | "right") => void;
 }
 
 function drawDashedRect(graphic: Graphics, x: number, y: number, width: number, height: number, color: number, alpha = 1) {
@@ -238,6 +244,9 @@ export function ClassroomCanvas({
   onMovePodium,
   onToolFeedback,
   onToggleSeatDisabled,
+  onToggleClassRepresentative,
+  onAddStudentTag,
+  onToggleGuardianSeat,
 }: ClassroomCanvasProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLElement>(null);
@@ -252,6 +261,8 @@ export function ClassroomCanvas({
   const podiumDragRef = useRef<PodiumDragState | null>(null);
   const groupCountRef = useRef(0);
   const cameraRef = useRef({ x: 0, y: 0, scale: 1 });
+  const editingCameraRef = useRef({ x: 0, y: 0, scale: 1 });
+  const previousPrintModeRef = useRef(printMode);
   const panRef = useRef<{ start: Point; origin: Point } | null>(null);
   const redrawRef = useRef<() => void>(() => undefined);
   const finishDragRef = useRef<(event: FederatedPointerEvent) => void>(() => undefined);
@@ -275,6 +286,8 @@ export function ClassroomCanvas({
   const [zoom, setZoom] = useState(100);
   const [ruleTooltip, setRuleTooltip] = useState<RuleTooltipState>();
   const [studentContextMenu, setStudentContextMenu] = useState<StudentContextMenuState>();
+  const [toolHintVisible, setToolHintVisible] = useState(false);
+  const [toolHintCountdown, setToolHintCountdown] = useState(10);
 
   latestRef.current = {
     aisleWidth,
@@ -293,6 +306,26 @@ export function ClassroomCanvas({
     tool,
   };
 
+  useEffect(() => {
+    if (tool === "select" || printMode) {
+      setToolHintVisible(false);
+      return;
+    }
+
+    const startedAt = Date.now();
+    setToolHintCountdown(10);
+    setToolHintVisible(true);
+    const timer = window.setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((TOOL_HINT_DURATION_MS - (Date.now() - startedAt)) / 1000));
+      setToolHintCountdown(remaining);
+      if (remaining === 0) {
+        setToolHintVisible(false);
+        window.clearInterval(timer);
+      }
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [printMode, tool]);
+
   const openStudentContextMenu = useCallback((
     studentId: string,
     studentName: string,
@@ -307,8 +340,8 @@ export function ClassroomCanvas({
       studentId,
       studentName,
       seatId,
-      x: clamp(x + 12, 12, Math.max(12, app.screen.width - 232)),
-      y: clamp(y + 8, 12, Math.max(12, app.screen.height - 190)),
+      x: clamp(x + 12, 12, Math.max(12, app.screen.width - 256)),
+      y: clamp(y + 8, 12, Math.max(12, app.screen.height - 420)),
     });
   }, []);
 
@@ -470,15 +503,15 @@ export function ClassroomCanvas({
     background.rect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT).fill({ color: palette.paper, alpha: 0.18 });
     root.addChild(background);
 
-    const frontGuide = makeLabel("教室前方 · BLACKBOARD", 11, 0x77756f, "500");
+    const frontGuide = makeLabel("教室前方 · BLACKBOARD", 14, 0x77756f, "500");
     frontGuide.position.set(24, 22);
     frontGuide.alpha = 0.72;
     root.addChild(frontGuide);
 
     const hasLeftGuardian = seats.some((seat) => seat.guardian === "left");
     const hasRightGuardian = seats.some((seat) => seat.guardian === "right");
-    const podiumMinX = hasLeftGuardian ? 130 : 20;
-    const podiumMaxX = hasRightGuardian ? 844 : LOGICAL_WIDTH - 166;
+    const podiumMinX = hasLeftGuardian ? 140 : 54;
+    const podiumMaxX = hasRightGuardian ? 832 : LOGICAL_WIDTH - 200;
     const resolvedPodiumX = clamp(podiumPosition.x, podiumMinX, podiumMaxX);
     const podium = new Container();
     const podiumBody = new Graphics();
@@ -516,6 +549,45 @@ export function ClassroomCanvas({
     }
     root.addChild(podium);
 
+    if (!printMode) {
+      (["left", "right"] as const).forEach((side) => {
+        if (side === "left" ? hasLeftGuardian : hasRightGuardian) return;
+        const addButton = new Container();
+        addButton.position.set(
+          side === "left" ? resolvedPodiumX - 54 : resolvedPodiumX + 166,
+          podiumPosition.y + 12,
+        );
+        addButton.zIndex = 50;
+        addButton.eventMode = "static";
+        addButton.cursor = "pointer";
+        addButton.hitArea = new Rectangle(-5, -5, 44, 58);
+
+        const buttonSurface = new Graphics();
+        const drawSurface = (active = false) => {
+          buttonSurface.clear();
+          buttonSurface.circle(17, 17, 16)
+            .fill({ color: active ? palette.blueSoft : palette.paper, alpha: 0.98 })
+            .stroke({ width: 1.5, color: palette.blue, alpha: active ? 1 : 0.72 });
+          buttonSurface.moveTo(11, 17).lineTo(23, 17).moveTo(17, 11).lineTo(17, 23)
+            .stroke({ width: 2, color: palette.blue });
+        };
+        drawSurface();
+        const buttonLabel = makeLabel(side === "left" ? "左护法" : "右护法", 9, palette.blue, "600");
+        buttonLabel.anchor.set(0.5);
+        buttonLabel.position.set(17, 43);
+        addButton.addChild(buttonSurface, buttonLabel);
+        addButton.on("pointerover", () => drawSurface(true));
+        addButton.on("pointerout", () => drawSurface(false));
+        addButton.on("pointerdown", (event: FederatedPointerEvent) => event.stopPropagation());
+        addButton.on("pointertap", (event: FederatedPointerEvent) => {
+          if (event.button !== 0) return;
+          event.stopPropagation();
+          onToggleGuardianSeat(side);
+        });
+        root.addChild(addButton);
+      });
+    }
+
     doorPlacements.forEach((placement) => {
       const door = new Container();
       const doorGraphic = new Graphics();
@@ -524,7 +596,7 @@ export function ClassroomCanvas({
       doorGraphic.arc(0, 0, 28, 0, Math.PI / 4).stroke({ width: 1, color: palette.line, alpha: 0.9 });
       const doorAtLeft = placement.includes("left");
       const doorAtFront = placement.includes("front");
-      const doorLabel = makeLabel(doorAtFront ? "前门" : "后门", 10, palette.coral, "600");
+      const doorLabel = makeLabel(doorAtFront ? "前门" : "后门", 13, palette.coral, "600");
       doorLabel.position.set(5, 25);
       door.addChild(doorGraphic, doorLabel);
       door.position.set(doorAtLeft ? 28 : LOGICAL_WIDTH - 68, doorAtFront ? 112 : LOGICAL_HEIGHT - 54);
@@ -596,7 +668,7 @@ export function ClassroomCanvas({
           .stroke({ width: 1.2, color: palette.blue, alpha: 0.34 });
         root.addChild(guide);
 
-        const widthLabel = makeLabel(`${Math.round(aisleWidth)} px`, 10, palette.blue, "600");
+        const widthLabel = makeLabel(`${Math.round(aisleWidth)} px`, 13, palette.blue, "600");
         widthLabel.anchor.set(0.5);
         widthLabel.position.set((gapX + nextPlacement.x) / 2, groupTop - 31);
         root.addChild(widthLabel);
@@ -620,7 +692,7 @@ export function ClassroomCanvas({
         );
         root.addChild(groupFrame);
 
-        const groupLabel = makeLabel(`第 ${placement.group + 1} 大组`, 11, 0x7b7972, "500");
+        const groupLabel = makeLabel(`第 ${placement.group + 1} 大组`, 14, 0x7b7972, "500");
         groupLabel.position.set(placement.x + 8, groupTop - 37);
         root.addChild(groupLabel);
       }
@@ -637,7 +709,7 @@ export function ClassroomCanvas({
           if (event.button !== 0) return;
           event.stopPropagation();
           if (seat.guardian) {
-            onToolFeedback("护法座固定在讲台两侧，可在布局设置中关闭");
+            onToolFeedback("护法座固定在讲台两侧，可点击座位外侧的减号移除");
             return;
           }
           if (seat.disabled) {
@@ -693,10 +765,35 @@ export function ClassroomCanvas({
         root.addChild(base);
 
         if (seat.guardian) {
-          const guardianLabel = makeLabel(seat.guardian === "left" ? "左护法" : "右护法", 10, palette.blue, "600");
+          const guardianLabel = makeLabel(seat.guardian === "left" ? "左护法" : "右护法", 13, palette.blue, "600");
           guardianLabel.anchor.set(0.5);
           guardianLabel.position.set(x + seatWidth / 2, y - 9);
           root.addChild(guardianLabel);
+
+          if (!printMode) {
+            const removeButton = new Container();
+            removeButton.position.set(
+              seat.guardian === "left" ? x - 12 : x + seatWidth + 12,
+              y + seatHeight / 2,
+            );
+            removeButton.zIndex = 50;
+            removeButton.eventMode = "static";
+            removeButton.cursor = "pointer";
+            removeButton.hitArea = new Rectangle(-14, -14, 28, 28);
+            const removeSurface = new Graphics();
+            removeSurface.circle(0, 0, 10)
+              .fill({ color: palette.paper, alpha: 0.98 })
+              .stroke({ width: 1.3, color: palette.coral, alpha: 0.76 });
+            removeSurface.moveTo(-4, 0).lineTo(4, 0).stroke({ width: 1.8, color: palette.coral });
+            removeButton.addChild(removeSurface);
+            removeButton.on("pointerdown", (event: FederatedPointerEvent) => event.stopPropagation());
+            removeButton.on("pointertap", (event: FederatedPointerEvent) => {
+              if (event.button !== 0) return;
+              event.stopPropagation();
+              onToggleGuardianSeat(seat.guardian!);
+            });
+            root.addChild(removeButton);
+          }
         }
 
         if (seat.disabled) {
@@ -741,6 +838,17 @@ export function ClassroomCanvas({
           .stroke({ width: selected ? 2 : 1.15, color: selected ? palette.blue : palette.ink });
         token.addChild(card);
 
+        if (student.isClassRepresentative) {
+          const representativeBadge = new Graphics();
+          representativeBadge.circle(11, 10, 9)
+            .fill({ color: theme === "cute" ? 0xe28a45 : 0xc98118 })
+            .stroke({ width: 2, color: 0xffffff });
+          const representativeText = makeLabel("课", 9, 0xffffff, "600");
+          representativeText.anchor.set(0.5);
+          representativeText.position.set(11, 9.5);
+          token.addChild(representativeBadge, representativeText);
+        }
+
         const ruleCount = studentRuleCounts.get(studentId) ?? 0;
         if (ruleCount > 0) {
           const ruleMarkerX = seatWidth < 78 ? 14 : 16;
@@ -751,7 +859,7 @@ export function ClassroomCanvas({
           ruleMarker.hitArea = new Rectangle(-11, -11, 22, 22);
           const ruleMarkerBall = new Graphics();
           ruleMarkerBall.circle(0, 0, 8.5).fill({ color: palette.blue }).stroke({ width: 2, color: palette.paper });
-          const ruleMarkerText = makeLabel("规", 8.5, 0xffffff, "600");
+          const ruleMarkerText = makeLabel("规", 10, 0xffffff, "600");
           ruleMarkerText.anchor.set(0.5);
           ruleMarkerText.position.set(0, -0.5);
           ruleMarker.addChild(ruleMarkerBall, ruleMarkerText);
@@ -781,11 +889,12 @@ export function ClassroomCanvas({
           token.addChild(ruleMarker);
         } else {
           const genderMark = new Graphics();
-          genderMark.circle(12, seatHeight / 2, 4).stroke({ width: 1.2, color: student.gender === "女" ? 0xc95f78 : 0x4e77a9 });
+          const genderColor = student.gender === "女" ? 0xc95f78 : student.gender === "男" ? 0x4e77a9 : 0x8b8c86;
+          genderMark.circle(12, seatHeight / 2, 4).stroke({ width: 1.2, color: genderColor });
           token.addChild(genderMark);
         }
 
-        const nameLabel = makeLabel(student.name, seatWidth < 78 ? 11 : 15, palette.ink, selected ? "600" : "500");
+        const nameLabel = makeLabel(student.name, seatWidth < 78 ? 14 : 18, palette.ink, selected ? "600" : "500");
         const nameOffset = ruleCount > 0 ? (seatWidth < 78 ? 11 : 13) : 5;
         nameLabel.anchor.set(0.5);
         nameLabel.position.set(seatWidth / 2 + nameOffset, seatHeight / 2);
@@ -885,7 +994,7 @@ export function ClassroomCanvas({
       const markerY = (from.y + to.y) / 2 + (index % 3 - 1) * 4;
       const markerBackground = new Graphics();
       markerBackground.circle(0, 0, 10).fill({ color: palette.paper }).stroke({ width: 2, color: styleColor });
-      const markerText = makeLabel(style.marker, 10, styleColor, "600");
+      const markerText = makeLabel(style.marker, 12, styleColor, "600");
       markerText.anchor.set(0.5);
       markerText.position.set(0, -0.5);
       marker.addChild(markerBackground, markerText);
@@ -927,6 +1036,7 @@ export function ClassroomCanvas({
     doorPlacements,
     onClearSeat,
     openStudentContextMenu,
+    onToggleGuardianSeat,
     onToggleSeatDisabled,
     podiumPosition,
     previewRuleType,
@@ -1004,8 +1114,8 @@ export function ClassroomCanvas({
           const distance = Math.hypot(pointer.x - podiumDrag.startPointer.x, pointer.y - podiumDrag.startPointer.y);
           if (distance > 4) podiumDrag.moved = true;
           if (podiumDrag.moved) {
-            const minimumX = latestRef.current.hasLeftGuardian ? 130 : 20;
-            const maximumX = latestRef.current.hasRightGuardian ? 844 : LOGICAL_WIDTH - 166;
+            const minimumX = latestRef.current.hasLeftGuardian ? 140 : 54;
+            const maximumX = latestRef.current.hasRightGuardian ? 832 : LOGICAL_WIDTH - 200;
             podiumDrag.node.position.set(
               clamp(snap(pointer.x - podiumDrag.pointerOffset.x), minimumX, maximumX),
               clamp(snap(pointer.y - podiumDrag.pointerOffset.y), 18, 112),
@@ -1116,8 +1226,8 @@ export function ClassroomCanvas({
         }
 
         if (activeTool === "podium") {
-          const minimumX = latestRef.current.hasLeftGuardian ? 130 : 20;
-          const maximumX = latestRef.current.hasRightGuardian ? 844 : LOGICAL_WIDTH - 166;
+          const minimumX = latestRef.current.hasLeftGuardian ? 140 : 54;
+          const maximumX = latestRef.current.hasRightGuardian ? 832 : LOGICAL_WIDTH - 200;
           latestRef.current.onMovePodium({
             x: clamp(snap(point.x - 73), minimumX, maximumX),
             y: clamp(snap(point.y - 31), 18, 112),
@@ -1238,6 +1348,50 @@ export function ClassroomCanvas({
   }, [drawScene]);
 
   useEffect(() => {
+    const wasPrintMode = previousPrintModeRef.current;
+    previousPrintModeRef.current = printMode;
+    if (wasPrintMode === printMode) return;
+
+    const app = appRef.current;
+    const root = rootRef.current;
+    const host = hostRef.current;
+    if (!app || !root || !host) return;
+
+    if (printMode) editingCameraRef.current = { ...cameraRef.current };
+
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        const currentApp = appRef.current;
+        const currentRoot = rootRef.current;
+        const currentHost = hostRef.current;
+        if (!currentApp || !currentRoot || !currentHost) return;
+
+        currentApp.renderer.resize(
+          Math.max(1, currentHost.clientWidth),
+          Math.max(1, currentHost.clientHeight),
+        );
+        currentApp.stage.hitArea = currentApp.screen;
+
+        if (printMode) {
+          fitCanvas();
+        } else {
+          const camera = editingCameraRef.current;
+          cameraRef.current = { ...camera };
+          currentRoot.position.set(camera.x, camera.y);
+          currentRoot.scale.set(camera.scale);
+          setZoom(Math.round(camera.scale * 100));
+        }
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, [fitCanvas, printMode]);
+
+  useEffect(() => {
     if (generationPulse <= 0 || !appRef.current) return;
     const positions = [...seatPositionsRef.current.values()];
     positions.forEach((position, index) => {
@@ -1285,8 +1439,9 @@ export function ClassroomCanvas({
   };
 
   const handleContextMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.target instanceof HTMLInputElement) return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
-      const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='menuitem']")];
+      const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='menuitem']:not(:disabled)")];
       if (!items.length) return;
       event.preventDefault();
       const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
@@ -1301,11 +1456,9 @@ export function ClassroomCanvas({
     }
   };
 
-  const classroomSeats = seats.filter((seat) => !seat.guardian);
-  const visibleGroupCount = classroomSeats.length ? Math.max(...classroomSeats.map((seat) => seat.group)) + 1 : 0;
-  const doorSummary = doorPlacements.length
-    ? doorPlacements.map((placement) => `${placement.includes("front") ? "前" : "后"}${placement.includes("left") ? "左" : "右"}门`).join("、")
-    : "未设置教室门";
+  const contextMenuStudent = studentContextMenu
+    ? students.find((student) => student.id === studentContextMenu.studentId)
+    : undefined;
 
   return (
     <section
@@ -1326,7 +1479,7 @@ export function ClassroomCanvas({
       aria-describedby="canvas-student-actions-help"
       tabIndex={printMode ? undefined : 0}
     >
-      <span className="visually-hidden" id="canvas-student-actions-help">右键学生可打开操作菜单；键盘用户先选择学生，再按 Shift 加 F10。</span>
+      <span className="visually-hidden" id="canvas-student-actions-help">讲台两侧的加号可添加左右护法座位；右键学生可打开操作菜单；键盘用户先选择学生，再按 Shift 加 F10。</span>
       <div className="canvas-grid" />
       <div className="pixi-host" ref={hostRef} />
       {!printMode && studentContextMenu && (
@@ -1343,8 +1496,35 @@ export function ClassroomCanvas({
         >
           <div className="student-context-menu-header">
             <span aria-hidden="true">{studentContextMenu.studentName.slice(0, 1)}</span>
-            <div><strong>{studentContextMenu.studentName}</strong><small>当前已选 {selectedStudentIds.length} 人</small></div>
+            <div>
+              <strong>{studentContextMenu.studentName}</strong>
+              <small>{contextMenuStudent?.isClassRepresentative ? "课代表 · " : ""}当前已选 {selectedStudentIds.length} 人</small>
+            </div>
           </div>
+          {contextMenuStudent && (
+            <StudentQuickTags
+              key={contextMenuStudent.id}
+              studentName={contextMenuStudent.name}
+              tags={contextMenuStudent.tags}
+              onAddTag={(tag) => onAddStudentTag(contextMenuStudent.id, tag)}
+            />
+          )}
+          <button
+            className={`student-context-menu-representative ${contextMenuStudent?.isClassRepresentative ? "is-active" : ""}`}
+            type="button"
+            role="menuitem"
+            tabIndex={-1}
+            onClick={() => {
+              onToggleClassRepresentative(studentContextMenu.studentId);
+              setStudentContextMenu(undefined);
+            }}
+          >
+            <BadgeCheck size={16} />
+            <span>
+              <strong>{contextMenuStudent?.isClassRepresentative ? "取消课代表" : "设为课代表"}</strong>
+              <small>{contextMenuStudent?.isClassRepresentative ? "移除座位上的专属标记" : "在座位上显示专属标记"}</small>
+            </span>
+          </button>
           <button
             type="button"
             role="menuitem"
@@ -1405,11 +1585,11 @@ export function ClassroomCanvas({
       )}
       {!printMode && (
         <>
-          {tool !== "select" && (
+          {tool !== "select" && toolHintVisible && (
             <div className={`canvas-tool-hint ${previewRuleType && selectedStudentIds.length >= 2 ? "has-rule-preview" : ""}`} role="status">
               <strong>{toolDetails[tool].label}</strong>
               <span>{toolDetails[tool].description}</span>
-              <kbd>Esc</kbd>
+              <span className="canvas-tool-countdown" aria-hidden="true">{toolHintCountdown}s</span>
             </div>
           )}
           {previewRuleType && selectedStudentIds.length >= 2 && (
@@ -1419,26 +1599,19 @@ export function ClassroomCanvas({
               <em>{plannedPairCount(previewRuleType, selectedStudentIds.length)} 条关系</em>
             </div>
           )}
-          <div className="canvas-caption">
-            <span className="live-dot" />
-            WebGL 画布
-            <span>·</span>
-            {visibleGroupCount ? `${visibleGroupCount} 组` : "空白自定义"}
-            <span>·</span>
-            {seats.filter((seat) => !seat.disabled).length} 个可用座位
-            <span>·</span>
-            {doorSummary}
-          </div>
           <div className="zoom-controls" aria-label="画布缩放">
-            <button type="button" onClick={() => applyZoom(0.9)} aria-label="缩小">
+            <button className="has-styled-tooltip" type="button" onClick={() => applyZoom(0.9)} aria-label="缩小画布，每次缩小 10%">
               <Minus size={15} />
+              <StyledTooltip label="缩小画布" description="每次缩小 10%；也可以向下滚动鼠标滚轮。" side="top" />
             </button>
             <output>{zoom}%</output>
-            <button type="button" onClick={() => applyZoom(1.1)} aria-label="放大">
+            <button className="has-styled-tooltip" type="button" onClick={() => applyZoom(1.1)} aria-label="放大画布，每次放大 10%">
               <Plus size={15} />
+              <StyledTooltip label="放大画布" description="每次放大 10%；也可以向上滚动鼠标滚轮。" side="top" />
             </button>
-            <button type="button" onClick={fitCanvas} aria-label="适应窗口">
+            <button className="has-styled-tooltip" type="button" onClick={fitCanvas} aria-label="让全部座位适应窗口">
               <Maximize2 size={15} />
+              <StyledTooltip label="适应窗口" description="自动调整缩放和位置，让全部座位回到可视区域。" side="top" />
             </button>
           </div>
         </>

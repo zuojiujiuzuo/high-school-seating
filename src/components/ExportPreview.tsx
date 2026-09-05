@@ -37,6 +37,9 @@ export function ExportPreview({
         key={seat.id}
         style={style}
       >
+        {!seat.disabled && student?.isClassRepresentative && (
+          <span className="print-seat-representative" aria-label="课代表">课</span>
+        )}
         <strong aria-label={seat.disabled ? "停用座位" : undefined}>{seat.disabled ? "×" : student?.name ?? "空位"}</strong>
         {!seat.disabled && student && (showGender || showStudentNo) && (
           <small>

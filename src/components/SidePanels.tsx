@@ -1,8 +1,10 @@
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   Check,
   ChevronRight,
+  CircleHelp,
   Download,
   DoorOpen,
   FileImage,
@@ -11,12 +13,13 @@ import {
   Grid3X3,
   LayoutGrid,
   Link2,
+  ListChecks,
   MonitorUp,
   Palette,
-  Presentation,
   RotateCcw,
   ShieldCheck,
   Sparkles,
+  Trash2,
   Unlink2,
   UserRoundX,
   UsersRound,
@@ -25,10 +28,11 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import { algorithmOptions } from "../data/mockData";
 import { layoutPresets } from "../domain/layoutPresets";
 import { plannedPairCount, ruleLabels } from "../domain/rules";
+import { StyledTooltip } from "./StyledTooltip";
 import type {
   ConstraintType,
   DoorPlacement,
-  GuardianSide,
+  ExportVariant,
   GenerationStrategy,
   LayoutPresetId,
   RuleConflict,
@@ -48,7 +52,7 @@ export function RosterPanel({ onImport, onAddStudent, onNext }: RosterPanelProps
       <PanelHeading eyebrow="名单检查" title="数据准备" note="先处理必填项，再进入布局。" />
       <div className="health-card">
         <div className="health-ring">100<small>%</small></div>
-        <div><strong>必填信息完整</strong><span>姓名、性别、班级均已识别</span></div>
+        <div><strong>必填信息完整</strong><span>姓名、学号均已识别</span></div>
       </div>
       <section className="panel-section">
         <h3>导入方式</h3>
@@ -74,7 +78,6 @@ export function RosterPanel({ onImport, onAddStudent, onNext }: RosterPanelProps
 interface LayoutPanelProps {
   preset: LayoutPresetId;
   doorPlacements: DoorPlacement[];
-  guardianSides: GuardianSide[];
   disabledSeatCount: number;
   groups: number;
   rows: number;
@@ -82,7 +85,6 @@ interface LayoutPanelProps {
   aisleWidth: number;
   onPresetChange: (preset: LayoutPresetId) => void;
   onDoorPlacementToggle: (placement: DoorPlacement) => void;
-  onGuardianToggle: (side: GuardianSide) => void;
   onRowsChange: (rows: number) => void;
   onSeatsPerDeskChange: (seatsPerDesk: 1 | 2) => void;
   onOpenAdvanced: () => void;
@@ -100,7 +102,6 @@ const doorOptions: { id: DoorPlacement; label: string }[] = [
 export function LayoutPanel({
   preset,
   doorPlacements,
-  guardianSides,
   disabledSeatCount,
   groups,
   rows,
@@ -108,7 +109,6 @@ export function LayoutPanel({
   aisleWidth,
   onPresetChange,
   onDoorPlacementToggle,
-  onGuardianToggle,
   onRowsChange,
   onSeatsPerDeskChange,
   onOpenAdvanced,
@@ -142,28 +142,6 @@ export function LayoutPanel({
             </button>
           ))}
         </div>
-      </section>
-      <section className="panel-section guardian-section">
-        <div className="section-title-row"><h3>讲台护法座</h3><small>可选普通座位</small></div>
-        <div className="guardian-options">
-          {(["left", "right"] as const).map((side) => {
-            const selected = guardianSides.includes(side);
-            return (
-              <button
-                aria-pressed={selected}
-                className={selected ? "is-selected" : ""}
-                key={side}
-                type="button"
-                onClick={() => onGuardianToggle(side)}
-              >
-                <UsersRound size={17} />
-                <span><strong>{side === "left" ? "左护法" : "右护法"}</strong><small>讲台{side === "left" ? "左" : "右"}侧</small></span>
-                {selected && <Check size={14} />}
-              </button>
-            );
-          })}
-        </div>
-        <p className="guardian-note">计入可用座位，可正常入座、换位、禁用与导出。</p>
       </section>
       <section className="panel-section compact-form">
         <div className="section-title-row"><h3>网格参数</h3><button className="text-button" type="button" onClick={onOpenAdvanced}>高级编辑</button></div>
@@ -209,16 +187,18 @@ interface SeatingPanelProps {
   onAddRule: () => void;
   onDeleteConstraintBatch: (batchId: string) => void;
   algorithms: GenerationStrategy[];
-  separateGenders: boolean;
+  hasMissingGender: boolean;
   weights: {
     score: number;
     height: number;
     appearance: number;
   };
   onAlgorithmToggle: (algorithm: GenerationStrategy) => void;
-  onSeparateGendersChange: (value: boolean) => void;
   onWeightChange: (key: "score" | "height" | "appearance", value: number) => void;
   onGenerate: () => void;
+  simpleMode: boolean;
+  hasGeneratedPlan: boolean;
+  onConfirmAndExport: () => void;
 }
 
 const ruleOptions: { id: ConstraintType; icon: typeof UsersRound; note: string }[] = [
@@ -240,127 +220,66 @@ export function SeatingPanel({
   onAddRule,
   onDeleteConstraintBatch,
   algorithms,
-  separateGenders,
+  hasMissingGender,
   weights,
   onAlgorithmToggle,
-  onSeparateGendersChange,
   onWeightChange,
   onGenerate,
+  simpleMode,
+  hasGeneratedPlan,
+  onConfirmAndExport,
 }: SeatingPanelProps) {
+  const hasSelectedStudents = selectedStudents.length > 0;
   const hasRuleSelection = selectedStudents.length >= 2;
-  const [activeTab, setActiveTab] = useState<"rules" | "solutions">(() => hasRuleSelection ? "rules" : "solutions");
-  const wasMultiSelectionRef = useRef(hasRuleSelection);
+  const [activeTab, setActiveTab] = useState<"rules" | "solutions">(() => hasSelectedStudents ? "rules" : "solutions");
+  const hadSelectedStudentsRef = useRef(hasSelectedStudents);
   const ruleTabRef = useRef<HTMLButtonElement>(null);
   const solutionTabRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    if (hasRuleSelection && !wasMultiSelectionRef.current) setActiveTab("rules");
-    if (!hasRuleSelection && activeTab === "rules") setActiveTab("solutions");
-    wasMultiSelectionRef.current = hasRuleSelection;
-  }, [activeTab, hasRuleSelection]);
+    if (hasSelectedStudents && !hadSelectedStudentsRef.current) setActiveTab("rules");
+    hadSelectedStudentsRef.current = hasSelectedStudents;
+  }, [hasSelectedStudents]);
 
   const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-    if (!hasRuleSelection) return;
     let nextTab: "rules" | "solutions" | undefined;
-    if (event.key === "ArrowLeft" || event.key === "ArrowUp" || event.key === "Home") nextTab = "rules";
-    if (event.key === "ArrowRight" || event.key === "ArrowDown" || event.key === "End") nextTab = "solutions";
+    if (event.key === "ArrowLeft" || event.key === "ArrowUp" || event.key === "Home") nextTab = "solutions";
+    if (event.key === "ArrowRight" || event.key === "ArrowDown" || event.key === "End") nextTab = "rules";
     if (!nextTab) return;
     event.preventDefault();
     setActiveTab(nextTab);
     requestAnimationFrame(() => (nextTab === "rules" ? ruleTabRef.current : solutionTabRef.current)?.focus());
   };
 
-  if (selectedStudents.length === 1) {
-    const student = selectedStudents[0];
-    const studentNames = new Map(students.map((item) => [item.id, item.name]));
-    const relatedRules = constraints.filter((constraint) => (
-      constraint.pair.a === student.id || constraint.pair.b === student.id
-    ));
-    const details = [
-      ["性别", student.gender],
-      ["班级", student.className],
-      ["学号", student.studentNo || "未填写"],
-      ["成绩", student.score ?? "未填写"],
-      ["身高", student.height ? `${student.height} cm` : "未填写"],
-      ["颜值", student.appearance ?? "未填写"],
-    ];
-
-    return (
-      <aside className="inspector-panel seating-panel student-inspector-panel">
-        <PanelHeading eyebrow="学生信息" title={student.name} note="当前选中 1 名学生；继续选择其他学生后进入规则配置。" />
-        <div className="student-profile-card">
-          <span aria-hidden="true">{student.name.slice(0, 1)}</span>
-          <div><strong>{student.name}</strong><small>{student.className} · {student.gender}</small></div>
-          <button className="text-button" type="button" onClick={onClearSelection}>取消选择</button>
-        </div>
-        <section className="panel-section student-detail-section" aria-labelledby="student-basic-title">
-          <div className="section-title-row"><h3 id="student-basic-title">基本信息</h3><small>名单资料</small></div>
-          <dl className="student-detail-grid">
-            {details.map(([label, value]) => (
-              <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
-            ))}
-          </dl>
-        </section>
-        <section className="panel-section student-detail-section" aria-labelledby="student-tags-title">
-          <div className="section-title-row"><h3 id="student-tags-title">标签与备注</h3></div>
-          <div className="student-detail-tags">
-            {student.tags?.length ? student.tags.map((tag) => <span key={tag}>{tag}</span>) : <small>暂无标签</small>}
-          </div>
-          {student.notes && <p className="student-detail-note">{student.notes}</p>}
-        </section>
-        <section className="panel-section student-detail-section" aria-labelledby="student-rules-title">
-          <div className="section-title-row"><h3 id="student-rules-title">关联规则</h3><small>{relatedRules.length} 条</small></div>
-          {relatedRules.length ? (
-            <div className="student-related-rules">
-              {relatedRules.map((constraint) => {
-                const peerId = constraint.pair.a === student.id ? constraint.pair.b : constraint.pair.a;
-                return (
-                  <div key={constraint.id}>
-                    <span aria-hidden="true">规</span>
-                    <strong>{ruleLabels[constraint.type]}</strong>
-                    <small>与 {studentNames.get(peerId) ?? "未知学生"}</small>
-                  </div>
-                );
-              })}
-            </div>
-          ) : <p className="student-detail-empty">该学生暂未设置排座规则。</p>}
-        </section>
-        <div className="student-multi-select-hint"><UsersRound size={17} /><span><strong>需要设置规则？</strong>在画布中再选择至少 1 名学生。</span></div>
-      </aside>
-    );
-  }
-
   const positive = selectedRule === "desk_mate" || selectedRule === "adjacent";
   const hasOddPair = positive && selectedStudents.length > 2 && selectedStudents.length % 2 !== 0;
   const count = plannedPairCount(selectedRule, selectedStudents.length);
-  const groupedConstraints = [...new Map(constraints.map((item) => [item.batchId, item])).values()].slice(-2).reverse();
+  const studentNames = new Map(students.map((student) => [student.id, student.name]));
+  const constraintBatches = [...constraints.reduce((grouped, constraint) => {
+    grouped.set(constraint.batchId, [...(grouped.get(constraint.batchId) ?? []), constraint]);
+    return grouped;
+  }, new Map<string, SeatingConstraint[]>()).entries()].map(([batchId, items]) => ({
+    batchId,
+    type: items[0].type,
+    count: items.length,
+    names: [...new Set(items.flatMap((item) => [item.pair.a, item.pair.b]))]
+      .map((studentId) => studentNames.get(studentId) ?? "未知学生")
+      .join("、"),
+  })).reverse();
+  const recentConstraintBatches = constraintBatches.slice(0, 2);
 
   return (
     <aside className="inspector-panel rule-panel seating-panel seating-panel-with-dock">
       <div className="seating-panel-scroll">
       <PanelHeading
-        eyebrow="排座工作台"
-        title={activeTab === "rules" ? "规则配置" : "方案生成"}
-        note={activeTab === "rules" ? "为已选学生建立排座约束。" : "组合策略和数据权重，生成候选方案。"}
+        title={activeTab === "rules" ? (hasSelectedStudents ? "规则配置" : "全局规则") : "方案生成"}
+        note={activeTab === "rules"
+          ? hasSelectedStudents
+            ? `已选中 ${selectedStudents.length} 名学生，继续选择对象并设置关系。`
+            : "查看和管理当前座位方案中的全部规则。"
+          : undefined}
         toolbar={(
           <div className="seating-panel-tabs" role="tablist" aria-label="排座工作区">
-            <button
-              ref={ruleTabRef}
-              id="seating-tab-rules"
-              type="button"
-              role="tab"
-              aria-selected={activeTab === "rules"}
-              aria-controls="seating-rules-panel"
-              aria-disabled={!hasRuleSelection}
-              tabIndex={activeTab === "rules" ? 0 : -1}
-              title={hasRuleSelection ? undefined : "选择至少两名学生后可设置规则"}
-              onClick={() => {
-                if (hasRuleSelection) setActiveTab("rules");
-              }}
-              onKeyDown={handleTabKeyDown}
-            >
-              规则
-            </button>
             <button
               ref={solutionTabRef}
               id="seating-tab-solutions"
@@ -374,10 +293,25 @@ export function SeatingPanel({
             >
               方案
             </button>
+            <button
+              ref={ruleTabRef}
+              id="seating-tab-rules"
+              type="button"
+              role="tab"
+              aria-label={`规则，已保存 ${constraintBatches.length} 组`}
+              aria-selected={activeTab === "rules"}
+              aria-controls="seating-rules-panel"
+              tabIndex={activeTab === "rules" ? 0 : -1}
+              onClick={() => setActiveTab("rules")}
+              onKeyDown={handleTabKeyDown}
+            >
+              <span>规则</span>
+              {constraintBatches.length > 0 && <span className="seating-panel-tab-count">{constraintBatches.length}</span>}
+            </button>
           </div>
         )}
       />
-      {activeTab === "rules" && hasRuleSelection && (
+      {activeTab === "rules" && hasSelectedStudents && (
           <section id="seating-rules-panel" className="seating-work-section seating-tab-panel" role="tabpanel" aria-labelledby="seating-tab-rules" tabIndex={0}>
         <div className="section-title-row"><h3 id="seating-rules-title">设置规则</h3><small>可选</small></div>
       <div className="selected-heading">
@@ -419,14 +353,14 @@ export function SeatingPanel({
       )}
 
       <div className={`rule-summary ${hasOddPair ? "has-error" : ""}`}>
-        {hasOddPair ? <AlertTriangle size={18} /> : <Sparkles size={18} />}
+        {!hasRuleSelection ? <UsersRound size={18} /> : hasOddPair ? <AlertTriangle size={18} /> : <Sparkles size={18} />}
         <div>
-          <strong>{hasOddPair ? "还差 1 人完成配对" : `将建立 ${count} 条两两规则`}</strong>
-          <span>全部按硬约束参与自动排座</span>
+          <strong>{!hasRuleSelection ? "再选择 1 名学生" : hasOddPair ? "还差 1 人完成配对" : `将建立 ${count} 条两两规则`}</strong>
+          <span>{hasRuleSelection ? "全部按硬约束参与自动排座" : "选择完成后即可添加规则"}</span>
         </div>
       </div>
 
-      <button className="primary-button full-width" type="button" disabled={selectedStudents.length < 2 || hasOddPair} onClick={onAddRule}>
+      <button className="primary-button full-width" type="button" disabled={!hasRuleSelection || hasOddPair} onClick={onAddRule}>
         添加规则
       </button>
 
@@ -440,14 +374,14 @@ export function SeatingPanel({
         </div>
       )}
 
-      {groupedConstraints.length > 0 && (
+      {recentConstraintBatches.length > 0 && (
         <section className="panel-section existing-rules">
           <div className="section-title-row"><h3>最近添加</h3><small>{constraints.length} 条</small></div>
-          {groupedConstraints.map((constraint) => (
-            <div className="existing-rule" key={constraint.batchId}>
+          {recentConstraintBatches.map((batch) => (
+            <div className="existing-rule" key={batch.batchId}>
               <span className="rule-color-mark" />
-              <div><strong>{ruleLabels[constraint.type]}</strong><small>批次包含 {constraints.filter((item) => item.batchId === constraint.batchId).length} 条</small></div>
-              <button type="button" onClick={() => onDeleteConstraintBatch(constraint.batchId)}>删除</button>
+              <div><strong>{ruleLabels[batch.type]}</strong><small>批次包含 {batch.count} 条</small></div>
+              <button type="button" onClick={() => onDeleteConstraintBatch(batch.batchId)}>删除</button>
             </div>
           ))}
         </section>
@@ -460,27 +394,103 @@ export function SeatingPanel({
       </section>
       )}
 
+      {activeTab === "rules" && !hasSelectedStudents && (
+        <section id="seating-rules-panel" className="seating-work-section seating-tab-panel global-rules-panel" role="tabpanel" aria-labelledby="seating-tab-rules" tabIndex={0}>
+          <div className="section-title-row">
+            <h3>已保存规则</h3>
+            <small>{constraintBatches.length} 组 · {constraints.length} 条关系</small>
+          </div>
+          {constraintBatches.length ? (
+            <>
+              <div className="global-rule-list">
+                {constraintBatches.map((batch) => (
+                  <article key={batch.batchId}>
+                    <span className={`global-rule-mark rule-${batch.type}`} />
+                    <div>
+                      <strong>{ruleLabels[batch.type]}</strong>
+                      <small title={batch.names}>{batch.names}</small>
+                      <em>{batch.count} 条关系</em>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label={`删除“${ruleLabels[batch.type]}”规则`}
+                      onClick={() => onDeleteConstraintBatch(batch.batchId)}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </article>
+                ))}
+              </div>
+              <div className={`diagnostic-strip global-rule-diagnostic ${conflicts.length ? "has-error" : ""}`}>
+                {conflicts.length ? <AlertTriangle size={18} /> : <Check size={18} />}
+                <span><strong>{conflicts.length ? `${conflicts.length} 处规则冲突` : "当前无冲突"}</strong>{conflicts[0]?.message ?? "所有硬约束可以同时成立"}</span>
+              </div>
+              <p className="global-rule-note">规则会在生成方案时统一应用；删除后，画布关系标记会立即同步。</p>
+            </>
+          ) : (
+            <div className="global-rules-empty">
+              <ListChecks size={25} />
+              <strong>还没有已保存的规则</strong>
+              <small>先在画布中选择学生，再回到这里配置关系。</small>
+            </div>
+          )}
+        </section>
+      )}
+
       {activeTab === "solutions" && (
-      <section id="seating-solutions-panel" className="seating-work-section seating-tab-panel" role="tabpanel" aria-labelledby="seating-tab-solutions" tabIndex={0}>
-        <div className="section-title-row"><h3 id="seating-generation-title">生成方案</h3><small>比较 3 个候选</small></div>
-        <p className="section-note">生成时先满足已保存的硬规则，再按数据权重比较班级分布。</p>
-        <div className="section-title-row generation-strategy-heading"><h3>组合策略</h3><small>可多选</small></div>
+      <section id="seating-solutions-panel" className="seating-work-section seating-tab-panel solution-generation-panel" role="tabpanel" aria-labelledby="seating-tab-solutions" tabIndex={0}>
+        <div className="section-title-row generation-strategy-heading">
+          <span className="generation-strategy-title">
+            <h3 id="seating-generation-title">组合策略</h3>
+            <button
+              className="generation-strategy-help has-styled-tooltip"
+              type="button"
+              aria-label="组合策略说明：硬规则优先；随机排座会打乱座位，成绩均匀会平衡区域成绩，小组均衡会综合成绩和身高，身高模式会让低个靠前高个靠后，标签策略会让视力关注学生靠前并将组长候选和学科优势学生均匀分组，男女分坐会优先安排同性同桌，防早恋模式会分散高关注异性组合"
+            >
+              <CircleHelp size={15} strokeWidth={1.8} />
+              <StyledTooltip
+                label="系统策略规则"
+                description="硬规则始终优先。随机排座会打乱座位；成绩均匀会平衡区域成绩；小组均衡会综合成绩与身高；身高模式让低个靠前、高个靠后；标签策略让“视力关注”优先靠前，并将“组长候选”和各学科优势均匀分到大组；男女分坐优先安排同性同桌；防早恋模式会分散高关注异性组合。"
+                side="bottom"
+              />
+            </button>
+          </span>
+          <small>可多选</small>
+        </div>
         <div className="algorithm-list">
           {algorithmOptions.map((option) => {
             const selected = algorithms.includes(option.id);
+            const unavailable = (option.id === "romance_guard" || option.id === "gender_separated") && hasMissingGender;
             return (
-              <button aria-pressed={selected} className={selected ? "is-selected" : ""} key={option.id} type="button" onClick={() => onAlgorithmToggle(option.id)}>
-                <span className="algorithm-check">{selected && <Check size={10} strokeWidth={2.5} />}</span>
-                <span><strong>{option.name}</strong><small>{option.note}</small></span>
-              </button>
+              <div className="algorithm-option" key={option.id}>
+                <button
+                  aria-pressed={selected}
+                  className={`algorithm-choice ${selected ? "is-selected" : ""} ${unavailable ? "is-unavailable" : ""} ${option.id === "tag_balanced" ? "has-inline-help" : ""}`}
+                  disabled={unavailable}
+                  type="button"
+                  onClick={() => onAlgorithmToggle(option.id)}
+                >
+                  <span className="algorithm-check">{selected && <Check size={10} strokeWidth={2.5} />}</span>
+                  <span><strong>{option.name}</strong><small>{unavailable ? "学生信息无性别，请用模板重新补充学生信息" : option.note}</small></span>
+                </button>
+                {option.id === "tag_balanced" && (
+                  <button
+                    className="algorithm-tag-help has-styled-tooltip"
+                    type="button"
+                    aria-label="标签策略说明：只读取系统标签。视力关注学生优先靠前，组长候选和各学科优势学生尽量均匀分到各大组。可在名单中编辑学生、右键学生，或导入同名标签进行设置；自定义标签不参与排座。"
+                  >
+                    <CircleHelp size={16} strokeWidth={2} aria-hidden="true" />
+                    <StyledTooltip
+                      label="标签策略如何工作"
+                      description="只读取系统标签：“视力关注”优先靠前；“组长候选”和语文、数学、英语、物理、化学、生物优势尽量均匀分到各大组。可在名单中编辑学生、右键学生，或导入同名标签进行设置。手动输入的自定义标签仅用于记录和检索，不参与排座。"
+                      side="bottom"
+                    />
+                  </button>
+                )}
+              </div>
             );
           })}
         </div>
-        <label className="toggle-row generation-gender-toggle">
-          <span className="generation-toggle-copy"><strong>男女分坐</strong><small>优先安排同性同桌，人数不均时保留最少混排</small></span>
-          <input type="checkbox" checked={separateGenders} onChange={(event) => onSeparateGendersChange(event.target.checked)} />
-          <span className="toggle-track" />
-        </label>
         <section className="panel-section weight-section">
         <div className="section-title-row"><h3>数据权重</h3><small>自动平衡</small></div>
         <label><span>成绩</span><input type="range" min="0" max="100" value={weights.score} onChange={(event) => onWeightChange("score", Number(event.target.value))} /><output>{weights.score}%</output></label>
@@ -497,14 +507,24 @@ export function SeatingPanel({
       </section>
       )}
       </div>
-      {activeTab === "solutions" && <div className="seating-generate-dock">
-        <button className="primary-button full-width generate-button seating-generate-button" type="button" onClick={onGenerate}><Sparkles size={18} />生成 3 个方案</button>
+      {(activeTab === "solutions" || simpleMode) && <div className={`seating-generate-dock ${simpleMode ? "is-simple" : ""}`}>
+        <button className={`${simpleMode ? "secondary-button" : "primary-button"} full-width generate-button seating-generate-button`} type="button" onClick={onGenerate}><Sparkles size={18} />{hasGeneratedPlan ? "重新生成方案" : "生成方案"}</button>
+        {simpleMode && (
+          <button
+            className="primary-button full-width generate-button seating-confirm-export-button"
+            type="button"
+            title={hasGeneratedPlan ? "确认当前预览方案并选择导出格式" : "确认当前座位并选择导出格式"}
+            onClick={onConfirmAndExport}
+          >
+            <Download size={18} />确认方案并导出
+          </button>
+        )}
       </div>}
     </aside>
   );
 }
 
-type ExportFormat = "xlsx" | "svg" | "png" | "pdf" | "pptx";
+type ExportFormat = "xlsx" | "png" | "pdf";
 
 interface ExportPanelProps {
   format: ExportFormat;
@@ -514,21 +534,22 @@ interface ExportPanelProps {
   fileName: string;
   theme: "paper" | "ink";
   appTheme: "minimal" | "cute";
+  variant: ExportVariant;
   onFormatChange: (format: ExportFormat) => void;
   onShowGenderChange: (value: boolean) => void;
   onShowStudentNoChange: (value: boolean) => void;
   onShowGroupBoundariesChange: (value: boolean) => void;
   onFileNameChange: (value: string) => void;
   onThemeChange: (value: "paper" | "ink") => void;
+  onVariantChange: (variant: ExportVariant) => void;
   onExport: () => void;
+  onBack?: () => void;
 }
 
 const formats: { id: ExportFormat; label: string; icon: typeof FileText }[] = [
   { id: "xlsx", label: "Excel", icon: FileSpreadsheet },
-  { id: "svg", label: "SVG", icon: FileImage },
   { id: "png", label: "PNG", icon: FileImage },
   { id: "pdf", label: "PDF", icon: FileText },
-  { id: "pptx", label: "PPTX", icon: Presentation },
 ];
 
 export function ExportPanel({
@@ -539,22 +560,26 @@ export function ExportPanel({
   fileName,
   theme,
   appTheme,
+  variant,
   onFormatChange,
   onShowGenderChange,
   onShowStudentNoChange,
   onShowGroupBoundariesChange,
   onFileNameChange,
   onThemeChange,
+  onVariantChange,
   onExport,
+  onBack,
 }: ExportPanelProps) {
-  const usesCanvasSnapshot = format !== "xlsx";
+  const isVisualFormat = format !== "xlsx";
 
   return (
     <aside className="inspector-panel">
       <PanelHeading
         eyebrow="打印与分享"
         title="导出座次"
-        note={usesCanvasSnapshot ? "按当前画布原样导出，不再套用打印版式。" : "Excel 使用表格式版式预览。"}
+        note={isVisualFormat ? "PDF 与 PNG 均提供普通版和精简版。" : "Excel 使用表格式版式预览。"}
+        toolbar={onBack ? <button className="text-button export-back-button" type="button" onClick={onBack}><ArrowLeft size={14} />返回排座</button> : undefined}
       />
       <section className="panel-section">
         <h3>文件格式</h3>
@@ -566,18 +591,29 @@ export function ExportPanel({
           ))}
         </div>
       </section>
-      {usesCanvasSnapshot ? (
+      {isVisualFormat ? (
         <>
-          <div className="export-mode-note">
-            <MonitorUp size={18} />
-            <span><strong>导出当前画面</strong><small>座位、背景、配色和画布视角都会保留。</small></span>
-          </div>
-          {appTheme === "cute" && (
-            <div className="color-print-note" role="note">
-              <Palette size={18} />
-              <span><strong>建议使用彩色打印</strong><small>可爱风含浅色背景，灰度打印容易让画面层次发糊。</small></span>
+          <section className="panel-section">
+            <h3>导出版式</h3>
+            <div className="export-variant-options" role="group" aria-label="导出版式">
+              <button className={variant === "standard" ? "is-selected" : ""} type="button" onClick={() => onVariantChange("standard")}>
+                <strong>普通版</strong><small>保留当前画布视角与配色</small>
+              </button>
+              <button className={variant === "compact" ? "is-selected" : ""} type="button" onClick={() => onVariantChange("compact")}>
+                <strong>精简版</strong><small>纯白底，仅保留座次信息</small>
+              </button>
             </div>
-          )}
+            <div className="export-mode-note">
+              <MonitorUp size={18} />
+              <span><strong>{variant === "standard" ? "导出当前画面" : "生成精简座次表"}</strong><small>{variant === "standard" ? "座位、背景、配色和画布视角都会保留。" : "自动居中座位并放大姓名，适合直接打印。"}</small></span>
+            </div>
+            {variant === "standard" && appTheme === "cute" && (
+              <div className="color-print-note" role="note">
+                <Palette size={18} />
+                <span><strong>建议使用彩色打印</strong><small>可爱风含浅色背景，灰度打印容易让画面层次发糊。</small></span>
+              </div>
+            )}
+          </section>
         </>
       ) : (
         <>
@@ -596,25 +632,25 @@ export function ExportPanel({
           </section>
         </>
       )}
-      <label className="file-name-field"><span>文件名</span><input value={fileName} onChange={(event) => onFileNameChange(event.target.value)} /><small>.{format}</small></label>
+      <label className="file-name-field"><span>文件名</span><input value={fileName} onChange={(event) => onFileNameChange(event.target.value)} /><small>{isVisualFormat ? `_${variant === "compact" ? "精简版" : "普通版"}` : ""}.{format}</small></label>
       <div className="panel-footer">
         <button className="primary-button full-width" type="button" onClick={onExport}>
-          <Download size={18} />{usesCanvasSnapshot ? "导出当前画面" : "导出 Excel"}
+          <Download size={18} />{isVisualFormat ? `导出${variant === "compact" ? "精简版" : "普通版"}` : "导出 Excel"}
         </button>
       </div>
     </aside>
   );
 }
 
-function PanelHeading({ eyebrow, title, note, toolbar }: { eyebrow: string; title: string; note: string; toolbar?: ReactNode }) {
+function PanelHeading({ eyebrow, title, note, toolbar }: { eyebrow?: string; title: string; note?: string; toolbar?: ReactNode }) {
   return (
-    <header className="panel-heading">
-      <div className="panel-heading-top">
-        <span className="eyebrow">{eyebrow}</span>
+    <header className={`panel-heading ${!eyebrow && toolbar ? "has-toolbar-only" : ""} ${note ? "has-note" : "is-compact"}`}>
+      <div className={`panel-heading-top ${!eyebrow ? "is-toolbar-only" : ""}`}>
+        {eyebrow && <span className="eyebrow">{eyebrow}</span>}
         {toolbar}
       </div>
       <h2>{title}</h2>
-      <p>{note}</p>
+      {note && <p>{note}</p>}
     </header>
   );
 }
