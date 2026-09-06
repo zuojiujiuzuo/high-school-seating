@@ -2,6 +2,7 @@
 """Password-protected, mobile-friendly issuer for Ban Zhen licenses."""
 
 import base64
+import calendar
 import hmac
 import json
 import os
@@ -62,7 +63,7 @@ LOGIN_HTML = r"""<!doctype html>
   <main>
     <div class="eyebrow">PRIVATE LICENSE ISSUER</div>
     <h1>进入授权签发台</h1>
-    <p>输入签发密码后即可生成永久授权文件，无需账号。</p>
+    <p>输入签发密码后即可生成离线授权文件，无需账号。</p>
     <form id="login">
       <input id="password" type="password" required autofocus autocomplete="current-password" placeholder="签发密码" aria-label="签发密码">
       <button id="submit" type="submit">登录</button>
@@ -117,8 +118,17 @@ INDEX_HTML = r"""<!doctype html>
     input { width: 100%; min-height: 48px; padding: 0 14px; border: 1px solid #dec6cf; border-radius: 12px; color: #3c3337; background: #fff; font: inherit; }
     input:focus { border-color: #e64e83; outline: 3px solid rgba(230,78,131,.13); }
     small { color: #927f86; font-weight: 500; line-height: 1.55; }
-    .permanent { display: flex; align-items: center; gap: 10px; min-height: 44px; margin: 0 0 18px; padding: 0 13px; border-radius: 12px; background: #fff3f7; color: #bd3566; font-weight: 750; }
-    .permanent::before { content: "✓"; display: grid; place-items: center; width: 23px; height: 23px; border-radius: 50%; color: #fff; background: #e64e83; }
+    fieldset { min-width: 0; margin: 0 0 18px; padding: 0; border: 0; }
+    legend { margin-bottom: 10px; font-size: 14px; font-weight: 750; }
+    .duration-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+    .duration-option { position: relative; display: flex; align-items: center; justify-content: center; min-height: 46px; margin: 0; padding: 0 10px; border: 1px solid #dec6cf; border-radius: 11px; background: #fff; cursor: pointer; font-weight: 700; text-align: center; }
+    .duration-option:has(input:checked) { border-color: #e64e83; color: #c93468; background: #fff3f7; box-shadow: inset 0 0 0 1px #e64e83; }
+    .duration-option input[type="radio"] { position: absolute; width: 1px; min-height: 1px; margin: 0; padding: 0; opacity: 0; pointer-events: none; }
+    .duration-option.custom { grid-column: 1 / -1; justify-content: space-between; gap: 12px; padding: 8px 10px 8px 14px; }
+    .duration-option.custom input[type="number"] { position: static; width: 118px; min-height: 38px; padding: 0 10px; opacity: 1; pointer-events: auto; text-align: center; }
+    .duration-option.custom input[type="number"]:disabled { color: #ab9aa0; background: #f6f2f3; }
+    .validity-summary { display: flex; align-items: center; gap: 10px; min-height: 44px; margin: 0 0 18px; padding: 0 13px; border-radius: 12px; background: #fff3f7; color: #bd3566; font-weight: 750; }
+    .validity-summary::before { content: "✓"; display: grid; place-items: center; width: 23px; height: 23px; border-radius: 50%; color: #fff; background: #e64e83; }
     button { width: 100%; min-height: 52px; border: 0; border-radius: 13px; color: #fff; background: linear-gradient(135deg, #e64e83, #c93468); box-shadow: 0 10px 24px rgba(201,52,104,.24); font: 800 16px/1 system-ui, sans-serif; cursor: pointer; }
     button:disabled { cursor: wait; opacity: .65; }
     #status { min-height: 24px; margin: 16px 0 0; color: #7e6e74; font-size: 13px; line-height: 1.6; text-align: center; }
@@ -126,13 +136,14 @@ INDEX_HTML = r"""<!doctype html>
     #status.error { color: #c52f47; }
     .notice { margin-top: 16px; padding: 14px 16px; border: 1px solid #ead0d9; border-radius: 14px; color: #7e6e74; background: rgba(255,255,255,.62); font-size: 12px; line-height: 1.65; }
     a { color: #bd3566; font-weight: 700; }
+    @media (max-width: 520px) { .duration-options { grid-template-columns: 1fr 1fr; } .duration-option.custom { grid-column: 1 / -1; } }
   </style>
 </head>
 <body>
   <main>
     <div class="eyebrow">ZUOJIU LICENSE ISSUER</div>
     <h1>班阵授权签发台</h1>
-    <p class="intro">生成可在不同电脑、手机浏览器和桌面客户端重复导入的永久离线授权。</p>
+    <p class="intro">生成可在不同电脑、手机浏览器和桌面客户端重复导入的离线授权。</p>
     <form class="card" id="form">
       <label>授权对象
         <input id="licensee" maxlength="80" value="佐玖本人" required autocomplete="organization">
@@ -143,9 +154,23 @@ INDEX_HTML = r"""<!doctype html>
         <small>仅支持字母、数字、点、横线和下划线。</small>
       </label>
       <label>授权版本
-        <input id="edition" maxlength="40" value="个人永久版" required>
+        <input id="edition" maxlength="40" value="正式版" required>
       </label>
-      <div class="permanent">永久有效 · 不绑定设备</div>
+      <fieldset>
+        <legend>有效期</legend>
+        <div class="duration-options">
+          <label class="duration-option"><input type="radio" name="duration" value="permanent" checked><span>永久</span></label>
+          <label class="duration-option"><input type="radio" name="duration" value="year"><span>1 年</span></label>
+          <label class="duration-option"><input type="radio" name="duration" value="month"><span>1 个月</span></label>
+          <label class="duration-option"><input type="radio" name="duration" value="quarter"><span>3 个月</span></label>
+          <label class="duration-option custom">
+            <input type="radio" name="duration" value="custom" aria-label="选择自定义时长">
+            <span>自定义时长（月）</span>
+            <input id="customMonths" type="number" min="1" max="120" step="1" value="6" disabled aria-label="自定义月数">
+          </label>
+        </div>
+      </fieldset>
+      <div class="validity-summary" id="validitySummary">永久有效 · 不绑定设备</div>
       <button id="submit" type="submit">生成并下载授权文件</button>
       <p id="status" aria-live="polite"></p>
     </form>
@@ -155,6 +180,18 @@ INDEX_HTML = r"""<!doctype html>
     const form = document.querySelector('#form');
     const submit = document.querySelector('#submit');
     const status = document.querySelector('#status');
+    const customMonths = document.querySelector('#customMonths');
+    const validitySummary = document.querySelector('#validitySummary');
+    const durationLabels = { permanent: '永久有效', year: '有效期 1 年', month: '有效期 1 个月', quarter: '有效期 3 个月' };
+    const selectedDuration = () => document.querySelector('input[name="duration"]:checked').value;
+    const updateDuration = () => {
+      const duration = selectedDuration();
+      customMonths.disabled = duration !== 'custom';
+      const label = duration === 'custom' ? `有效期 ${customMonths.value || 0} 个月` : durationLabels[duration];
+      validitySummary.textContent = `${label} · 不绑定设备`;
+    };
+    document.querySelectorAll('input[name="duration"]').forEach((input) => input.addEventListener('change', updateDuration));
+    customMonths.addEventListener('input', updateDuration);
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       submit.disabled = true;
@@ -168,7 +205,9 @@ INDEX_HTML = r"""<!doctype html>
           body: JSON.stringify({
             licensee: document.querySelector('#licensee').value.trim(),
             licenseId: document.querySelector('#licenseId').value.trim(),
-            edition: document.querySelector('#edition').value.trim()
+            edition: document.querySelector('#edition').value.trim(),
+            duration: selectedDuration(),
+            customMonths: Number(customMonths.value)
           })
         });
         if (!response.ok) {
@@ -186,7 +225,8 @@ INDEX_HTML = r"""<!doctype html>
         link.remove();
         URL.revokeObjectURL(url);
         status.className = 'ok';
-        status.textContent = `已生成永久授权：${licenseId}`;
+        const expiresAt = response.headers.get('X-License-Expires-At');
+        status.textContent = expiresAt ? `已生成授权：${licenseId}，有效至 ${expiresAt}` : `已生成永久授权：${licenseId}`;
       } catch (error) {
         status.className = 'error';
         status.textContent = error instanceof Error ? error.message : '签发失败';
@@ -218,6 +258,14 @@ def rate_limited(remote, buckets=RATE_BUCKETS, limit=RATE_LIMIT, window=RATE_WIN
     recent.append(now)
     buckets[remote] = recent
     return False
+
+
+def add_months(value, months):
+    month_index = value.year * 12 + value.month - 1 + months
+    target_year, target_month_index = divmod(month_index, 12)
+    target_month = target_month_index + 1
+    target_day = min(value.day, calendar.monthrange(target_year, target_month)[1])
+    return date(target_year, target_month, target_day)
 
 
 class LicenseHandler(BaseHTTPRequestHandler):
@@ -310,6 +358,7 @@ class LicenseHandler(BaseHTTPRequestHandler):
         licensee = str(payload.get("licensee", "")).strip()
         edition = str(payload.get("edition", "")).strip()
         license_id = str(payload.get("licenseId", "")).strip()
+        duration = str(payload.get("duration", "permanent")).strip()
         if not license_id:
             license_id = "BZ-{}-{}".format(date.today().strftime("%Y%m%d"), secrets.token_hex(3).upper())
         if not (1 <= len(licensee) <= 80):
@@ -322,6 +371,20 @@ class LicenseHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": "授权编号格式不正确"})
             return
 
+        duration_months = {"permanent": None, "year": 12, "month": 1, "quarter": 3}.get(duration)
+        if duration == "custom":
+            custom_months = payload.get("customMonths")
+            if isinstance(custom_months, bool) or not isinstance(custom_months, int) or not (1 <= custom_months <= 120):
+                self.send_json(400, {"error": "自定义时长应为 1–120 个月的整数"})
+                return
+            duration_months = custom_months
+        elif duration not in {"permanent", "year", "month", "quarter"}:
+            self.send_json(400, {"error": "授权有效期选项不正确"})
+            return
+
+        issued_at = date.today()
+        expires_at = add_months(issued_at, duration_months).isoformat() if duration_months is not None else None
+
         claims = {
             "schemaVersion": 1,
             "product": PRODUCT,
@@ -329,8 +392,8 @@ class LicenseHandler(BaseHTTPRequestHandler):
             "licenseId": license_id,
             "licensee": licensee,
             "edition": edition,
-            "issuedAt": date.today().isoformat(),
-            "expiresAt": None,
+            "issuedAt": issued_at.isoformat(),
+            "expiresAt": expires_at,
         }
         canonical = json.dumps(claims, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         signature = base64.b64encode(PRIVATE_KEY.sign(canonical)).decode("ascii")
@@ -342,6 +405,8 @@ class LicenseHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Disposition", 'attachment; filename="{}.zj-license"'.format(license_id))
         self.send_header("Content-Length", str(len(content)))
         self.send_header("X-License-Id", license_id)
+        if expires_at:
+            self.send_header("X-License-Expires-At", expires_at)
         self.security_headers()
         self.end_headers()
         self.wfile.write(content)
